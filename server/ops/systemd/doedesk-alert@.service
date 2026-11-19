@@ -1,0 +1,49 @@
+# Emails the owner when a unit fails (server/alert.ts, through the same mail server as sign-in
+# links). The message names the unit and nothing from the database. One email per failure.
+[Unit]
+Description=DoeDesk Cloud alert for %i
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=doedesk
+Group=doedesk
+WorkingDirectory=/opt/doedesk/api/current
+EnvironmentFile=/etc/doedesk/api.env
+Environment=BUN_INSTALL_CACHE_DIR=/var/lib/doedesk/tmp
+ExecStart=/opt/doedesk/runtime/bun /opt/doedesk/api/current/server/alert.ts %i
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-alert
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+MemoryMax=256M

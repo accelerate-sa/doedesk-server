@@ -1,0 +1,54 @@
+# Carries the continuous copy to the replica bucket in Jeddah (server/ops/replica-sync.sh), as the
+# machine itself: no key is stored.
+[Unit]
+Description=DoeDesk Cloud database copy to Object Storage
+After=network-online.target doedesk-litestream.service
+Wants=network-online.target
+# One failure is a passing network fault and the next minute mends it; the self-check tells the
+# owner when the bucket has not been reached for ten minutes.
+
+[Service]
+Type=oneshot
+User=doedesk
+Group=doedesk
+WorkingDirectory=/opt/doedesk/api/current
+# Which bucket, in which namespace and compartment. No secret.
+EnvironmentFile=/etc/doedesk/backup.env
+Environment=DOEDESK_SNAPSHOT_WORK=/var/lib/doedesk/tmp
+ExecStart=/opt/doedesk/api/current/server/ops/replica-sync.sh
+TimeoutStartSec=10min
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-replica-sync
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+MemoryMax=512M

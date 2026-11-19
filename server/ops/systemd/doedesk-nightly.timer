@@ -1,0 +1,12 @@
+# 03:17 UTC every night, the time the Worker's cron trigger used. If the machine was off at that
+# time the job runs when it comes back; the job itself refuses a second run for the same night.
+[Unit]
+Description=DoeDesk Cloud nightly job, 03:17 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

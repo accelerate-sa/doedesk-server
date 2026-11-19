@@ -1,0 +1,53 @@
+# Refreshes the country file from DB-IP's free monthly database (server/ops/geo-update.sh).
+[Unit]
+OnFailure=doedesk-alert@%n.service
+Description=DoeDesk Cloud country file update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=doedesk
+Group=doedesk
+WorkingDirectory=/opt/doedesk/api/current
+Environment=DOEDESK_GEO_FILE=/var/lib/doedesk/geo/country.ddgeo
+Environment=DOEDESK_GEO_WORK=/var/lib/doedesk/tmp
+Environment=DOEDESK_RUNTIME=/opt/doedesk/runtime/bun
+Environment=BUN_INSTALL_CACHE_DIR=/var/lib/doedesk/tmp
+ExecStart=/opt/doedesk/api/current/server/ops/geo-update.sh
+TimeoutStartSec=30min
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-geo-update
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+MemoryMax=1G

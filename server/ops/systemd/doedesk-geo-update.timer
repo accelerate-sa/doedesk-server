@@ -1,0 +1,13 @@
+# DB-IP publishes a new edition at the start of each month. Run on the 3rd and again on the 17th,
+# so one failed download is made up for before the file is two months old.
+[Unit]
+Description=DoeDesk Cloud country file update, twice a month
+
+[Timer]
+OnCalendar=*-*-03 04:30:00 UTC
+OnCalendar=*-*-17 04:30:00 UTC
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

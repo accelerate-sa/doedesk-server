@@ -1,0 +1,32 @@
+# Continuous copy of the database (Litestream 0.5). Read from the release, where it lies.
+#
+# Litestream writes every change, within about a second of its being committed, to a folder beside
+# the database. That folder is copied to the replica bucket in Oracle Object Storage, Jeddah, once
+# a minute by doedesk-replica-sync (server/ops/replica-sync.sh), which signs in as the machine
+# itself (an Oracle "instance principal"): there is no key or password for the bucket anywhere.
+# So the copy off the machine is at most about a minute behind.
+#
+# Why not straight to the bucket: Litestream reaches Oracle only through its S3-compatible
+# interface, which takes a key pair belonging to an Oracle user. A user and a stored key were what
+# the owner did not want.
+#
+# A full copy is taken daily, and 29 days of full copies and changes are kept, so the database can
+# be brought back as it was at any moment in that time (server/ops/restore.sh). 29 days, because
+# the Privacy Policy says backups expire within 30. What Litestream removes from the folder, the
+# next sync removes from the bucket.
+
+snapshot:
+  interval: 24h
+  retention: 696h
+
+retention:
+  enabled: true
+
+dbs:
+  - path: /var/lib/doedesk/doedesk.sqlite
+    # The service's own busy timeout is 5 s; this is how long Litestream waits for the service.
+    busy-timeout: 5s
+    replica:
+      type: file
+      path: /var/lib/doedesk/replica
+      sync-interval: 1s

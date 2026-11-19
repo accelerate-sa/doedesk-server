@@ -1,0 +1,63 @@
+# Continuous copy of the database into a folder beside it (server/ops/litestream.yml), which
+# doedesk-replica-sync carries to Object Storage in Jeddah once a minute.
+[Unit]
+Description=DoeDesk Cloud database replication (Litestream)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+# Tells the owner when systemd has given up restarting it.
+OnFailure=doedesk-alert@%n.service
+
+[Service]
+Type=simple
+User=doedesk
+Group=doedesk
+# The configuration holds no secret and comes with the release: the service's user cannot read
+# /etc/doedesk, which is root's.
+ExecStart=/opt/doedesk/runtime/litestream replicate -config /opt/doedesk/api/current/server/ops/litestream.yml
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-litestream
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# Litestream gives each file of its copy the owner of the database (itself). Without this call
+# allowed, the sandbox kills it at the first write (seen on the machine in Jeddah).
+SystemCallFilter=@chown
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,111 @@
+# Caddy in front of the DoeDesk Cloud API. Installed as /etc/caddy/Caddyfile, or imported from
+# the one that is there (import /etc/caddy/doedesk-api.caddy).
+#
+# What it does: TLS with certificates it obtains and renews itself, a size limit, security
+# headers, the caller's address handed on to the API, and a request log that holds nothing
+# that names an account.
+#
+# These values come from the environment of the caddy service (/etc/caddy/doedesk.env):
+#   DOEDESK_SITE    the name or names it answers as      api.doedesk.com
+#   DOEDESK_TLS     "public" (the default) for a certificate from a public authority;
+#                   "internal" for a rehearsal with no public name, with a certificate Caddy makes itself
+#   ACME_EMAIL      where the certificate authority may write about expiry
+#   DOEDESK_UPSTREAM   where the API listens, if not 127.0.0.1:8787
+
+(tls_public) {
+	tls {
+		protocols tls1.2 tls1.3
+	}
+}
+(tls_internal) {
+	tls internal
+}
+
+{
+	email {$ACME_EMAIL}
+	servers {
+		timeouts {
+			read_header 10s
+			# A 20 MB document over a slow connection; reading it then takes up to two minutes.
+			read_body 120s
+			write 180s
+			idle 2m
+		}
+		max_header_size 16KB
+	}
+}
+
+{$DOEDESK_SITE:api.doedesk.com} {
+	import tls_{$DOEDESK_TLS:public}
+
+	# A document may be 20 MB (the API's own limit). Anything larger is refused before it is read.
+	request_body {
+		max_size 21MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# The two pages the API serves (the sign-in confirmation and the owner's dashboard) are
+		# never shown inside another site.
+		Content-Security-Policy "frame-ancestors 'none'"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		-Server
+	}
+
+	# For the machine itself only (the API also refuses them when they come through here).
+	@machine_only path /internal/health /cdn-cgi/*
+	respond @machine_only 404
+
+	reverse_proxy {$DOEDESK_UPSTREAM:127.0.0.1:8787} {
+		# The caller's address, and only that: whatever the caller wrote in this header is replaced.
+		# The API trusts this header because it comes from this machine (server/client-address.ts).
+		# Caddy says this line is unnecessary, because it does the same by default; it stays, so
+		# that the rule holds whatever is later added to Caddy's own settings.
+		header_up X-Forwarded-For {remote_host}
+		header_up -X-Real-IP
+		header_up -CF-Connecting-IP
+		header_up -CF-IPCountry
+		transport http {
+			dial_timeout 2s
+			response_header_timeout 150s
+		}
+	}
+
+	# The request log. One line per request with the time, the method, the path, the status, the
+	# size and the duration. Left out, because they name people or open accounts:
+	#   - the query string (old sign-in links carry their secret there; dashboard searches carry
+	#     an email address or a number);
+	#   - everything after /admin/ (dashboard addresses hold account identifiers);
+	#   - every request header (the sign-in token, the dashboard cookie) and every answer header
+	#     (the dashboard cookie when it is set);
+	#   - the last part of the caller's address: 203.0.113.0, not 203.0.113.57.
+	# Bodies are never logged by Caddy. Kept seven days, the figure in the Privacy Policy.
+	log {
+		output file /var/log/caddy/doedesk-api.log {
+			roll_size 50MiB
+			roll_keep 14
+			roll_keep_for 168h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "^(/admin)/.*|\?.*$" "${1}"
+				request>headers delete
+				request>tls delete
+				resp_headers delete
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+				request>client_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+				request>remote_port delete
+				user_id delete
+			}
+		}
+	}
+}

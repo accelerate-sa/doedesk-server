@@ -1,0 +1,80 @@
+# The DoeDesk Cloud API: server/main.ts under Bun, as its own user, able to write one folder.
+# Installed by server/ops/install.sh, which makes the paths below.
+[Unit]
+Description=DoeDesk Cloud API
+Documentation=file:/opt/doedesk/api/current/docs/variables.md
+After=network-online.target
+Wants=network-online.target
+# Ten starts in five minutes, then systemd stops trying and the unit shows as failed.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+# Tells the owner when systemd has given up restarting it.
+OnFailure=doedesk-alert@%n.service
+
+[Service]
+Type=simple
+User=doedesk
+Group=doedesk
+WorkingDirectory=/opt/doedesk/api/current
+# Secrets and settings: a file only root can read. systemd reads it before it drops to the
+# service's user, so the service never needs to open it. docs/variables.md lists every line.
+EnvironmentFile=/etc/doedesk/api.env
+Environment=DOEDESK_DATABASE=/var/lib/doedesk/doedesk.sqlite
+Environment=DOEDESK_GEO_FILE=/var/lib/doedesk/geo/country.ddgeo
+Environment=DOEDESK_HOST=127.0.0.1
+Environment=DOEDESK_PORT=8787
+Environment=BUN_INSTALL_CACHE_DIR=/var/lib/doedesk/tmp
+ExecStart=/opt/doedesk/runtime/bun /opt/doedesk/api/current/server/main.ts
+# Node instead of Bun, should it ever be needed (the suites run on both):
+#   ExecStart=/opt/doedesk/runtime/node /opt/doedesk/api/current/server/main.ts
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+# The service finishes the requests it has (reading a document can take two minutes) and exits.
+KillSignal=SIGTERM
+TimeoutStopSec=150
+# Its own journal, so that it has its own keeping time (journald@doedesk.conf).
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-api
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+
+# --- How much it may use ----------------------------------------------------------------------
+# A document being read is held in memory; four at once of 20 MB each is well under this.
+MemoryHigh=768M
+MemoryMax=1G
+TasksMax=256
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

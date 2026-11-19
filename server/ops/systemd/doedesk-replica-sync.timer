@@ -1,0 +1,11 @@
+# Once a minute: the copy off the machine is never more than about a minute behind.
+[Unit]
+Description=DoeDesk Cloud database copy to Object Storage, every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

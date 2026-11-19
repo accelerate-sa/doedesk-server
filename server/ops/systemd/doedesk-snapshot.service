@@ -1,0 +1,58 @@
+# The nightly encrypted snapshot of the database (server/ops/snapshot.sh).
+[Unit]
+OnFailure=doedesk-alert@%n.service
+Description=DoeDesk Cloud nightly encrypted snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=doedesk
+Group=doedesk
+WorkingDirectory=/opt/doedesk/api/current
+# The public key the snapshot is encrypted to, and which bucket it goes to. No secret.
+EnvironmentFile=/etc/doedesk/backup.env
+Environment=DOEDESK_DATABASE=/var/lib/doedesk/doedesk.sqlite
+Environment=DOEDESK_SNAPSHOT_WORK=/var/lib/doedesk/tmp
+Environment=DOEDESK_RUNTIME=/opt/doedesk/runtime/bun
+Environment=BUN_INSTALL_CACHE_DIR=/var/lib/doedesk/tmp
+ExecStart=/opt/doedesk/api/current/server/ops/snapshot.sh
+TimeoutStartSec=30min
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-snapshot
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# The encryption tool (age, as Ubuntu packages it) raises its own limit on open files when it
+# starts. Without this call allowed, the sandbox kills it (seen on the machine in Jeddah).
+SystemCallFilter=setrlimit
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+MemoryMax=512M

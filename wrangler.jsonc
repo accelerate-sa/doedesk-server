@@ -1,0 +1,25 @@
+// The API handlers in src/ as a Cloudflare Worker with a local D1 database, for `wrangler dev` and
+// the test suites only (test/local-service.mjs). Production runs the same handlers on a machine of
+// its own (server/); nothing in this repository deploys a Worker.
+//
+// The private repository's copy of this file also serves the public website (built from a folder
+// that is not published here, because its fonts may not be redistributed). Without that folder a
+// request to the site's host name gets an error; no test makes one.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "doedesk-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": false },
+  "send_email": [{ "name": "EMAIL" }],
+  "triggers": { "crons": ["17 3 * * *"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "doedesk-cloud",
+      // Local only. Any identifier works for a local database.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

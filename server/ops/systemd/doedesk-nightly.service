@@ -1,0 +1,52 @@
+# The nightly job (server/nightly.ts): deletes what is no longer kept, rolls old usage into months.
+# Started by doedesk-nightly.timer. Safe to start by hand: it runs at most once a night.
+[Unit]
+OnFailure=doedesk-alert@%n.service
+Description=DoeDesk Cloud nightly job
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=doedesk
+Group=doedesk
+WorkingDirectory=/opt/doedesk/api/current
+EnvironmentFile=/etc/doedesk/api.env
+Environment=DOEDESK_DATABASE=/var/lib/doedesk/doedesk.sqlite
+Environment=BUN_INSTALL_CACHE_DIR=/var/lib/doedesk/tmp
+ExecStart=/opt/doedesk/runtime/bun /opt/doedesk/api/current/server/nightly.ts
+TimeoutStartSec=30min
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-nightly
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+MemoryMax=512M

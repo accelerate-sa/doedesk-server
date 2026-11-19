@@ -1,0 +1,21 @@
+{
+  "name": "doedesk-server",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "typecheck:worker": "tsc --noEmit",
+    "typecheck:server": "tsc --noEmit -p tsconfig.server.json",
+    "serve": "node server/main.ts",
+    "test": "node server/test/run-all.mjs",
+    "verify-release": "node server/ops/release.mjs verify"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251101.0",
+    "@types/node": "^24.19.2",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.85.0"
+  }
+}
