@@ -30,9 +30,11 @@ export const ocr = async (request: Request, env: Env): Promise<Response> => {
     throw new ApiError(413, "too_large", "Send one image or PDF of at most 20 MB.");
   }
   const contentType = request.headers.get("content-type") ?? "application/octet-stream";
-  let result: { readonly text: string; readonly pages: number };
+  // `?layout=1` asks where each word is, for a caller that covers words in the image itself.
+  const withLayout = new URL(request.url).searchParams.get("layout") === "1";
+  let result: Awaited<ReturnType<typeof engineRead>>;
   try {
-    result = await engineRead(env, bytes, contentType);
+    result = await engineRead(env, bytes, contentType, withLayout);
   } catch (cause) {
     // Whether the reader bills a file it gave up on is not something its answer says, so a failed
     // file adds no pages; the count of failures is what is kept.
@@ -48,7 +50,7 @@ export const ocr = async (request: Request, env: Env): Promise<Response> => {
     ocr_pdf_pages: pdf ? result.pages : 0,
     ocr_pdf_bytes: pdf ? bytes.byteLength : 0,
   });
-  // `?layout=1` asks where each word is. The engine gives no word positions, so the answer never
-  // has `layout`; a caller that needs it and does not get it must not show the image.
-  return json({ text: result.text, pages: result.pages });
+  // `layout` only when asked for and the engine gave one. A caller that needs it and does not get
+  // it must not show the image; the app then sends the image's masked text instead.
+  return json({ text: result.text, pages: result.pages, ...(withLayout && result.layout !== undefined ? { layout: result.layout } : {}) });
 };

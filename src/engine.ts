@@ -5,11 +5,12 @@
  *                                 -> { "results": [{ "entities": [{ "start", "end", "kind" }] }] }
  *   POST {ENGINE_URL}/v1/ocr      the file as the body, its media type as content-type
  *                                 -> { "text": string, "pages"?: number }
+ *   POST {ENGINE_URL}/v1/ocr?layout=1
+ *                                 -> the same, with "layout": where each word of the text is
+ *                                    (`EngineLayout` below), when the engine can say
  *   GET  {ENGINE_URL}/v1/health   -> 200 when ready, with { detection, reading: { ready, state? } }
  *
- * Positions are UTF-16 code units, as JavaScript strings and the app count them. The engine answers
- * with no word positions, so `/v1/ocr?layout=1` answers without `layout`, and the app then sends no
- * image (ocr.ts).
+ * Positions are UTF-16 code units, as JavaScript strings and the app count them.
  *
  * In production the engine is detection and reading software on the same machine, behind a small
  * local service, reached on the machine's loopback address. There is no other path: when
@@ -144,15 +145,40 @@ export const engineDetect = async (env: Env, texts: ReadonlyArray<string>) => {
   };
 };
 
-/** The text of one file, and the pages read. A service that gives no page count is taken as one page. */
-export const engineRead = async (env: Env, bytes: ArrayBuffer, contentType: string) => {
+/**
+ * Where each word of a read file is, in this service's own format: the engine answers in it and the app reads it (its
+ * `packages/privacy-gateway/src/redaction/layout.ts`):
+ *
+ *   { "pages": [{ "page", "width", "height", "unit", "angle", "words": [...], "lines": [...] }],
+ *     "handwritten": [{ "offset", "length", "confidence" }] }
+ *
+ * Each word has its text, its four corners on the page, the engine's confidence in it, and its
+ * `offset` and `length` in the answer's text. The service passes it on as the engine gave it,
+ * neither changed nor repaired: the app checks every word against the text, and does not send an
+ * image whose words do not add up. Here only its outline is checked.
+ */
+export type EngineLayout = { readonly pages: ReadonlyArray<unknown> } & Readonly<Record<string, unknown>>;
+
+const layoutIn = (value: unknown): EngineLayout | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && Array.isArray((value as { pages?: unknown }).pages) ? (value as EngineLayout) : undefined;
+
+/**
+ * The text of one file, and the pages read. A service that gives no page count is taken as one page.
+ * With `withLayout`, the engine is asked where each word is too; `layout` is absent when it cannot say.
+ */
+export const engineRead = async (
+  env: Env,
+  bytes: ArrayBuffer,
+  contentType: string,
+  withLayout = false,
+): Promise<{ readonly text: string; readonly pages: number; readonly layout?: EngineLayout | undefined }> => {
   if (!engineConfigured(env)) {
     console.error("engine_not_configured read");
     throw new ApiError(502, "reader_failed", "The document reader is not available.");
   }
   let response: Response;
   try {
-    response = await fetch(address(env, "/v1/ocr"), {
+    response = await fetch(address(env, withLayout ? "/v1/ocr?layout=1" : "/v1/ocr"), {
       method: "POST",
       headers: { "content-type": contentType, ...authorization(env) },
       body: bytes,
@@ -168,10 +194,12 @@ export const engineRead = async (env: Env, bytes: ArrayBuffer, contentType: stri
   const body = (await response.json().catch(() => null)) as {
     text?: unknown;
     pages?: unknown;
+    layout?: unknown;
   } | null;
   if (response.ok && typeof body?.text === "string") {
     const pages = typeof body.pages === "number" && Number.isInteger(body.pages) && body.pages > 0 ? body.pages : 1;
-    return { text: body.text, pages };
+    const layout = withLayout ? layoutIn(body.layout) : undefined;
+    return { text: body.text, pages, ...(layout === undefined ? {} : { layout }) };
   }
   // The engine looked at the file and could not read it: the person's file is the problem, not us.
   // The message is ours: the engine's own wording is not passed on.

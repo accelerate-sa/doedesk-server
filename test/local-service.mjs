@@ -11,7 +11,7 @@
 // the run and deleted with it.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { copyFileSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -50,6 +50,13 @@ export const engineUnits = (texts) => 2 * texts.length;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * A reading with where each word is, as the app parses it: the first reading of the app's own
+ * redaction fixture `clean--letter_en` (packages/privacy-gateway/src/redaction/fixtures in the
+ * app repository): `{ text, pages, layout }`. The stand-in engine answers it for "[[letter]]".
+ */
+export const LETTER_READ = JSON.parse(readFileSync(join(ROOT, "test", "fixtures", "ocr-layout-letter.json"), "utf8"));
+
 /** The bearer token the services started here give the stand-in engine. */
 export const ENGINE_TOKEN = "stub-engine-token";
 
@@ -64,9 +71,13 @@ export const ENGINE_TOKEN = "stub-engine-token";
  *           adds entities a faulty engine might send.
  *   files   "pages=N" sets the page count (none given otherwise, which counts as one).
  *           "[[reader-down]]" fails (500); "[[unreadable]]" is 422; "[[slow]]" answers after 600 ms.
+ *           Asked where the words are (`?layout=1`), it adds a layout with one word, "text", or
+ *           for "[[letter]]" answers LETTER_READ; "[[no-layout]]" gives none, "[[odd-layout]]" one
+ *           that is not a layout at all. Not asked, it never adds one.
  */
 export const startEngineStub = async () => {
   const seen = { detect: [], ocr: [], authorization: new Set() };
+  const oneWord = { pages: [{ page: 1, width: 800, height: 600, unit: "pixel", angle: 0, words: [{ text: "text", polygon: [10, 20, 60, 20, 60, 40, 10, 40], confidence: 0.98, offset: 0, length: 4 }], lines: [{ polygon: [10, 20, 60, 20, 60, 40, 10, 40], offset: 0, length: 4 }] }], handwritten: [] };
   const server = createServer(async (request, response) => {
     const send = (status, value, headers = {}) => {
       response.writeHead(status, { "content-type": "application/json", ...headers });
@@ -102,14 +113,17 @@ export const startEngineStub = async () => {
           reported,
         );
       }
-      if (request.method === "POST" && request.url === "/v1/ocr") {
+      if (request.method === "POST" && (request.url === "/v1/ocr" || request.url === "/v1/ocr?layout=1")) {
         const head = body.subarray(0, 400).toString("latin1");
-        seen.ocr.push({ type: request.headers["content-type"], bytes: body.length });
+        const withLayout = request.url.endsWith("?layout=1");
+        seen.ocr.push({ type: request.headers["content-type"], bytes: body.length, ...(withLayout ? { layout: true } : {}) });
         if (head.includes("[[reader-down]]")) return send(500, { error: { message: "stub reader down" } });
         if (head.includes("[[unreadable]]")) return send(422, { error: { message: "stub could not read this file" } });
         if (head.includes("[[slow]]")) await sleep(600);
+        if (head.includes("[[letter]]")) return send(200, withLayout ? LETTER_READ : { text: LETTER_READ.text, pages: LETTER_READ.pages });
         const pages = /pages=(\d+)/.exec(head)?.[1];
-        return send(200, { text: `text${pages === undefined ? "" : ` of ${pages} page(s)`}`, ...(pages === undefined ? {} : { pages: Number(pages) }) });
+        const layout = !withLayout || head.includes("[[no-layout]]") ? {} : { layout: head.includes("[[odd-layout]]") ? [{ pages: [] }] : oneWord };
+        return send(200, { text: `text${pages === undefined ? "" : ` of ${pages} page(s)`}`, ...(pages === undefined ? {} : { pages: Number(pages) }), ...layout });
       }
       if (request.method === "GET" && request.url === "/v1/health") {
         return send(200, { ok: true, detection: { ready: true, state: "ready" }, reading: { ready: true }, uptimeSeconds: 1 });

@@ -35,6 +35,19 @@ import { MONTHLY_DETECT_CHARACTERS, MONTHLY_OCR_PAGES, nextMonthStart, readUsage
 
 const SITE_HOSTS = new Set(["doedesk.com", "www.doedesk.com"]);
 
+/**
+ * `/download/<build>` on the site: the installer's version-less name in the latest GitHub release.
+ * The release workflow uploads each installer under these names; the download page lists the same
+ * builds (web/src/lib/builds.ts). Keep the two lists the same.
+ */
+const DOWNLOADS: Readonly<Record<string, string>> = {
+  mac: "DoeDesk-arm64.dmg",
+  windows: "DoeDesk-x64.exe",
+  linux: "DoeDesk-x86_64.AppImage",
+  "linux-deb": "DoeDesk-amd64.deb",
+  "linux-arm64": "DoeDesk-arm64.AppImage",
+};
+
 /** False on the Cloudflare Worker once its D1 binding is removed (the last stage of the move off it). */
 const hasDatabase = (env: Env): boolean => (env as { DB?: unknown }).DB !== undefined;
 
@@ -119,10 +132,11 @@ const site = async (request: Request, env: Env, url: URL): Promise<Response> => 
   if (url.hostname === "www.doedesk.com") {
     return Response.redirect(`https://doedesk.com${url.pathname}${url.search}`, 301);
   }
-  // One address for the installer, so the site and the app never carry a version number.
-  if (url.pathname === "/download") {
-    return Response.redirect("https://github.com/accelerate-sa/doedesk/releases/latest/download/DoeDesk-arm64.dmg", 302);
-  }
+  // One stable address per installer, so the site and the app never carry a version number.
+  // `/download` itself is the download page (web/src/pages/download.astro), served below.
+  const build = /^\/download\/([a-z0-9-]+)$/.exec(url.pathname)?.[1];
+  const file = build !== undefined && Object.hasOwn(DOWNLOADS, build) ? DOWNLOADS[build] : undefined;
+  if (file !== undefined) return Response.redirect(`https://github.com/accelerate-sa/doedesk/releases/latest/download/${file}`, 302);
   if (url.pathname === "/mobile") return Response.redirect("https://doedesk.com/", 302);
   return env.ASSETS.fetch(request);
 };

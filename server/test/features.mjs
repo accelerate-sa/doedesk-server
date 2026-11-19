@@ -177,7 +177,10 @@ const rawMail = (to, subject) =>
     const after = daily("local");
     same("engine: a file the reader cannot read is the file's fault (422, with our own message, never the engine's); a reader that is down is ours (502); both counted as failed", [unreadable.status, unreadable.json?.error, readerDown.status, readerDown.json?.error?.code, after.ocr_failed, after.ocr_files, after.ocr_pages, after.ocr_pdf_pages], [422, { code: "unreadable", message: "The document could not be read." }, 502, "reader_failed", 2, 2, 5, 4]);
     const layout = await call("POST", "/v1/ocr?layout=1", { token: token("local"), raw: Buffer.from("an image"), headers: { "content-type": "image/png" } });
-    expect("engine: a caller that asks where the words are (?layout=1) gets text and pages and no layout, which tells the app not to send the image", layout.status === 200 && layout.json?.text === "text" && !("layout" in (layout.json ?? {})), layout);
+    same("engine: a caller that asks where the words are (?layout=1) gets the engine's layout as the engine gave it", [layout.status, layout.json?.text, layout.json?.layout?.pages?.[0]?.words], [200, "text", [{ text: "text", polygon: [10, 20, 60, 20, 60, 40, 10, 40], confidence: 0.98, offset: 0, length: 4 }]]);
+    const noLayout = await call("POST", "/v1/ocr?layout=1", { token: token("local"), raw: Buffer.from("[[no-layout]]"), headers: { "content-type": "image/png" } });
+    expect("engine: when the engine cannot say where the words are, the answer has no layout, which tells the app not to send the image", noLayout.status === 200 && noLayout.json?.text === "text" && !("layout" in (noLayout.json ?? {})), noLayout);
+    same("engine: the engine is asked where the words are only when the caller asks", engine.seen.ocr.slice(-4).map((file) => file.layout === true), [false, false, true, true]);
     same("engine: only the engine at ENGINE_URL was called, and it was given its token every time", [service.engine.seen.detect.length, service.engine.seen.ocr.length, [...engine.seen.authorization]], [0, 0, ["Bearer engine-token"]]);
 
     // Mail relayed by the Worker.

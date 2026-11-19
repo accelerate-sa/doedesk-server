@@ -87,7 +87,14 @@ for (const target of targets) {
   }
   await record("usage-metering", target, () => run(NODE[0], [...NODE.slice(1), "test/usage-metering.mjs"], env));
   await record("privacy-promises", target, () => run(NODE[0], [...NODE.slice(1), "test/privacy-promises.mjs"], env));
+  await record("ocr-layout", target, () => run(NODE[0], [...NODE.slice(1), "test/ocr-layout.mjs"], env));
   await record("features", target, () => run(NODE[0], [...NODE.slice(1), "server/test/features.mjs"], env));
+  // The site is served by the Worker only.
+  if (target === "worker") {
+    // The site is not published with the server code: without web/ there is nothing to check.
+    if (existsSync(join(ROOT, "web"))) await record("site-routes", target, () => run(NODE[0], [...NODE.slice(1), "test/site-routes.mjs"], env));
+    else console.log("skip  site-routes                   worker   no web/ folder here (it is not published)");
+  }
   if (target !== "worker") {
     await record("lifecycle", target, () => run(NODE[0], [...NODE.slice(1), "server/test/lifecycle.mjs"], env));
     await record("handoff (worker + server)", target, () => run(NODE[0], [...NODE.slice(1), "server/test/handoff.mjs"], env));
