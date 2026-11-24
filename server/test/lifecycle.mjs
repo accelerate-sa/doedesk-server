@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // The things a process on a machine has to get right that a Worker never had to:
 //   - the nightly job runs once a night, however often and however concurrently it is started;
 //   - a stop loses no write that was acknowledged, and finishes the requests already taken;

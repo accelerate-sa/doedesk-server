@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The nightly job: deletes what the Privacy Policy says is no longer kept. The periods, each beside
  * the sentence of the policy it comes from, are in periods.ts.

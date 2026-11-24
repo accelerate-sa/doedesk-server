@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Backup and restore, done for real on this machine with the same scripts and settings the server
 // uses (server/ops/snapshot.sh, restore.sh, litestream.yml), with a folder standing in for the bucket:
 //   - the continuous copy follows the running service, and brings the database back as it is now

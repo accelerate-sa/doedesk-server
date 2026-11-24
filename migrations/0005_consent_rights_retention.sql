@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+-- Copyright (C) 2026 Accelerate Technology Establishment
 -- What the Terms of Use and the Privacy Policy promise and the service did not yet do:
 -- a record of who accepted which version, a way to delete and export an account, contact mail
 -- that is tracked until it is closed, and what the nightly job needs to enforce the keeping times.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * Sends one message through a mail submission server (Oracle Email Delivery in Jeddah), over SMTP
  * with STARTTLS and a user name and password. No dependencies: the conversation is short.

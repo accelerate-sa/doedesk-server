@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 import { MARK_SVG } from "./brand.ts";
 import { escapeHtml } from "./http.ts";
 

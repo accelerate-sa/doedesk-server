@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Reboots and a watchdog for the DoeDesk API's confidential VM, driven from OUTSIDE the machine.
 #
 # Why from outside: on Oracle a reboot or power-off started inside an SEV-SNP guest never completes;

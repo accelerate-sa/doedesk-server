@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Looks the service over, on the machine. Run every five minutes by doedesk-check.timer; a problem
 # is printed and makes the exit status 1, which emails the owner (doedesk-alert@.service).
 #

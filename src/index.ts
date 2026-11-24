@@ -1,11 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * DoeDesk Cloud: accounts, the two services the DoeDesk app needs to mask personal data before a
- * request reaches a model (finding names in text, reading text out of images), usage events, and
- * the public site.
+ * request reaches a model (finding names in text, reading text out of images), the worker that
+ * reads sealed documents so that they never reach that model, usage events, and the public site.
+ * The worker runs at the upstream for the account's region, and this service passes requests on.
  *
- * Nothing sent for detection or reading is stored. Only counts are kept, per account and day.
+ * Nothing sent for detection or reading, or to the worker, is stored. Only counts are kept, per
+ * account and day.
  */
-import { authenticate, publicAccount, saveProfile } from "./accounts.ts";
+import { authenticate, changeRegion, publicAccount, saveProfile } from "./accounts.ts";
 import { adminDashboard } from "./admin.ts";
 import {
   acceptTerms,
@@ -31,7 +35,9 @@ import { ocr } from "./ocr.ts";
 import { confirmPage } from "./pages.ts";
 import { nightly } from "./retention.ts";
 import { deleteMe, exportMe } from "./rights.ts";
-import { MONTHLY_DETECT_CHARACTERS, MONTHLY_OCR_PAGES, nextMonthStart, readUsage } from "./usage.ts";
+import { MONTHLY_DETECT_CHARACTERS, MONTHLY_OCR_PAGES, MONTHLY_WORKER_INPUT_TOKENS, nextMonthStart, readUsage } from "./usage.ts";
+import { describeAccount, extension } from "./extension.ts";
+import { workerChat } from "./worker-chat.ts";
 
 const SITE_HOSTS = new Set(["doedesk.com", "www.doedesk.com"]);
 
@@ -82,10 +88,14 @@ const api = async (request: Request, env: Env, url: URL): Promise<Response> => {
       return signOut(request, env);
     case "GET /v1/me": {
       const account = await authenticate(request, env, { deletionOnly: true });
+      const about = await describeAccount(env, account);
       return json({
         ...publicAccount(account),
         field: account.field,
         workplace: account.workplace,
+        // Whether the hosted worker is included for this account, and if so the one for its region:
+        // whether it has one now, and what the app shows of it.
+        worker: about.worker,
         // Whether this account has accepted the Terms that are required now, and the versions in force.
         acceptance: await acceptanceStatus(env, account.userId),
         legal: legalSummary(env),
@@ -94,8 +104,11 @@ const api = async (request: Request, env: Env, url: URL): Promise<Response> => {
         allowance: {
           detectCharacters: MONTHLY_DETECT_CHARACTERS,
           ocrPages: MONTHLY_OCR_PAGES,
+          workerInputTokens: MONTHLY_WORKER_INPUT_TOKENS,
           resetsAt: nextMonthStart(),
         },
+        // What a layer beside the service says of the account (src/extension.ts). Nothing, without one.
+        ...about.beside,
       });
     }
     // Saves the two onboarding answers. Sending it again corrects them; sending nulls withdraws them.
@@ -104,6 +117,8 @@ const api = async (request: Request, env: Env, url: URL): Promise<Response> => {
       await saveProfile(env, account.userId, await readJson(request));
       return json({ ok: true });
     }
+    case "POST /v1/me/region":
+      return changeRegion(request, env);
     case "POST /v1/me/acceptance":
       return acceptTerms(request, env);
     case "GET /v1/me/export":
@@ -114,6 +129,8 @@ const api = async (request: Request, env: Env, url: URL): Promise<Response> => {
       return detect(request, env);
     case "POST /v1/ocr":
       return ocr(request, env);
+    case "POST /v1/worker/chat/completions":
+      return workerChat(request, env);
     case "POST /ingest/batch":
       return ingestBatch(request, env);
     case "POST /ingest/choice":
@@ -124,7 +141,8 @@ const api = async (request: Request, env: Env, url: URL): Promise<Response> => {
       return receiveRelayedMail(request, env);
     default:
       if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) return adminDashboard(request, env, url);
-      return json({ error: { code: "not_found", message: "Not found." } }, 404);
+      // Addresses of a layer beside the service, when there is one.
+      return (await extension().routes?.(request, env, url)) ?? json({ error: { code: "not_found", message: "Not found." } }, 404);
   }
 };
 

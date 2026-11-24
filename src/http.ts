@@ -1,4 +1,12 @@
-export interface Env {
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
+import type { WorkerRegionEnv } from "./worker-regions.ts";
+
+/**
+ * `WorkerRegionEnv`: the worker that reads sealed documents, one upstream per account region
+ * (`WORKER_SA_*`, `WORKER_EU_*`, `WORKER_GLOBAL_*`). See worker-regions.ts.
+ */
+export interface Env extends WorkerRegionEnv {
   readonly DB: D1Database;
   readonly EMAIL: { send(message: unknown): Promise<{ messageId: string }> };
   readonly ASSETS: Fetcher;
@@ -45,6 +53,17 @@ export interface Env {
    */
   readonly ENGINE_PRICE_PER_1000_UNITS?: string;
   readonly ENGINE_PRICE_PER_1000_PAGES?: string;
+  /**
+   * What the worker costs, in US dollars, per million tokens sent to it and per million tokens it
+   * answers with, for the owner's estimate (cost.ts). Unset: the worker counts as free there.
+   */
+  readonly WORKER_PRICE_PER_1M_INPUT_TOKENS?: string;
+  readonly WORKER_PRICE_PER_1M_OUTPUT_TOKENS?: string;
+  /**
+   * "1": every signed-in account has the worker for sealed documents. Unset: no account has it
+   * unless a layer beside the service says so (extension.ts). The service keeps no list of its own.
+   */
+  readonly WORKER_OPEN?: string;
   /** "freeze": nothing is written to the database. For the minutes of a move. See maintenance.ts. */
   readonly MAINTENANCE?: string;
   /**

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 import type { OpenOptions, SqliteDriver } from "../d1.ts";
 
 export interface ServeOptions {

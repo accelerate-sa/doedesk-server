@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /** Internet addresses as bytes: four for IPv4, sixteen for IPv6. Null for anything else. */
 
 const parseV4 = (text: string): Uint8Array | null => {

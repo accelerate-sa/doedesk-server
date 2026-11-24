@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # The nightly snapshot: a consistent copy of the database, compressed, encrypted to a key whose
 # private half is not on this machine, and uploaded to the snapshots bucket in Jeddah. The bucket
 # copies each object to Riyadh by itself and deletes it after 29 days.

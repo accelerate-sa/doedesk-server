@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Compares two databases: schema, and every table's row count and checksum.
 //
 //   node server/migration/verify.mjs --a d1:remote --b sqlite:/private/folder/doedesk.sqlite

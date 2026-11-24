@@ -1,11 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
- * The two rules that depend on the country a request comes from:
+ * The three rules that depend on the country a request comes from:
  *   - whether usage data may be on by default there, or must wait for the person's agreement;
- *   - whether a new account may be created from there.
+ *   - whether a new account may be created from there;
+ *   - which region a new account starts in, for the worker that reads sealed documents.
  *
  * Countries are ISO 3166-1 alpha-2 codes, as Cloudflare reports them from the IP address.
  */
 import { type Env, type Place } from "./http.ts";
+import type { AccountRegion } from "./worker-regions.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Usage data: where it must be off until the person agrees
@@ -103,3 +107,24 @@ export const signUpBlock = (
 export const SIGN_UP_UNAVAILABLE_MESSAGE =
   "New DoeDesk Cloud accounts cannot be created from your country yet. If you already have an account, sign in as usual. " +
   "You can also use DoeDesk with your own detection service, which needs no account.";
+
+// ---------------------------------------------------------------------------------------------
+// The region a new account starts in
+//
+// Guessed once, when the account is made, and never again: a later sign-in from another country
+// changes nothing, and only the person changes it (POST /v1/me/region). Migration 0008 gives the
+// accounts that existed before the same answer, from the same two facts, and
+// server/test/unit.ts holds the two to each other.
+
+/** Where "eu" is the starting region: the EU, the EEA, the United Kingdom, and Switzerland. */
+export const EU_REGION_COUNTRIES: ReadonlyArray<string> = [...CONSENT_REGIONS_EU_EEA_UK, "CH"];
+
+/**
+ * A Saudi mobile number, or a request from Saudi Arabia: "sa". The EU, the EEA, the United
+ * Kingdom or Switzerland: "eu". Anywhere else, and a country that is not known: "global".
+ */
+export const defaultAccountRegion = (signUpMethod: "email" | "phone", country: string | null): AccountRegion => {
+  if (signUpMethod === "phone" || country === "SA") return "sa";
+  if (country !== null && EU_REGION_COUNTRIES.includes(country)) return "eu";
+  return "global";
+};

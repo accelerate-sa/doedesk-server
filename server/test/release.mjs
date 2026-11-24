@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Release records (docs/releases.md): what the server serves at GET /v1/release, and the tooling
 // that makes, signs and checks a record (server/ops/release.mjs).
 //
@@ -35,6 +37,9 @@ try {
   const noSignature = await call("GET", "/v1/release/signature");
   expect("served: without a record, 404 with a code that says so", [none.status, none.json?.error?.code, noSignature.status].join() === "404,no_release_record,404", [none.status, none.json]);
 
+  const offer = await call("GET", "/v1/source");
+  expect("source: the service says where its source is and under which licence; with no release record it names no commit", offer.status === 200 && offer.json?.license === "AGPL-3.0-or-later" && offer.json?.source === "https://github.com/accelerate-sa/doedesk-server" && offer.json?.commit === null && !("layer" in offer.json), offer.json);
+
   // Written as deploy.sh writes them; the exact bytes matter, so the spacing is deliberately odd.
   const record = '{\n  "schema": "doedesk-release/1",   "commit": "0123"\n}\n';
   const bundle = '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}';
@@ -46,6 +51,10 @@ try {
   const gotText = await got.text();
   const gotSignature = await (await fetch(`${service.base}/v1/release/signature`)).text();
   expect("served: the record and its signature byte for byte, read fresh each time, to any origin", gotText === record && gotSignature === bundle && got.headers.get("access-control-allow-origin") === "*", [gotText, gotSignature]);
+  const withCommit = await call("GET", "/v1/source");
+  writeFileSync(join(folder, "RELEASE.json"), JSON.stringify({ schema: "doedesk-release/1", commit: "0123", layer: { name: "extra", sha256: "a".repeat(64), bytes: 9 } }));
+  const withLayer = await call("GET", "/v1/source");
+  expect("source: with a record it names the record's commit, and a layer beside the release when the record names one", withCommit.json?.commit === "0123" && !("layer" in withCommit.json) && withLayer.json?.layer?.name === "extra" && withLayer.json?.layer?.sha256 === "a".repeat(64) && /not part of this source/.test(withLayer.json?.layer?.note ?? ""), [withCommit.json, withLayer.json]);
   const posted = await call("POST", "/v1/release", { body: {} });
   expect("served: only GET; anything else goes on to the API, which does not know it", posted.status === 404 && posted.json?.error?.code === "not_found", posted.json);
 } finally {
@@ -77,6 +86,27 @@ if (!hasCommit) {
   const recordOne = JSON.parse(readFileSync(one.out, "utf8"));
   expect("record: names the commit, the archive's sha256 and size, the time, and starts the chain", one.status === 0 && recordOne.commit === commit && recordOne.archive.sha256 === sha && recordOne.archive.bytes === Number(bytes) && recordOne.sequence === 1 && recordOne.previous === null && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(recordOne.deployedAt) && /^00001-\d{8}T\d{6}Z-[0-9a-f]{12}\.json$/.test(one.name), [one, recordOne]);
 
+  // A layer beside the release (docs/releases.md): a folder that is not part of the release.
+  const beside = join(folder, "beside");
+  spawnSync("mkdir", ["-p", join(beside, "extra", "src"), join(beside, "extra", "test"), join(beside, "src")]);
+  for (const [name, text] of [["extra/index.ts", "export const extension = { name: 'extra' };\n"], ["extra/src/a.ts", "export {};\n"], ["extra/test/t.mjs", "// a test\n"], ["src/index.ts", "export {};\n"]]) writeFileSync(join(beside, name), text);
+  for (const args of [["init", "--quiet"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "-m", "a layer"]]) spawnSync("git", ["-C", beside, ...args]);
+  const layerArchive = tool(["archive", "--repo", beside, "--commit", "HEAD", "--layer", "extra", "--out", join(folder, "layer.tar")]);
+  const [, layerSha, layerBytes] = layerArchive.stdout.trim().split(" ");
+  const layerListing = spawnSync("tar", ["-tf", join(folder, "layer.tar")], { encoding: "utf8" }).stdout.split("\n").filter((name) => name !== "" && name !== "pax_global_header");
+  expect("layer: its archive holds what runs of that one folder, and nothing of the release or of its tests", layerArchive.status === 0 && layerListing.includes("extra/index.ts") && layerListing.includes("extra/src/a.ts") && layerListing.every((name) => name.startsWith("extra/") && !name.startsWith("extra/test")), layerListing);
+  const notLayers = ["server", "src", "docs", "releases", "../x", "nothing-here"].map((name) => tool(["archive", "--repo", beside, "--commit", "HEAD", "--layer", name, "--out", join(folder, "no.tar")]).status);
+  expect("layer: a folder of the release itself, a path, or a folder with no index.ts is not a layer", notLayers.every((status) => status === 1), notLayers);
+  const withLayerOut = join(folder, "with-layer.json");
+  const withLayer = tool(["record", "--commit", commit, "--sha256", sha, "--bytes", bytes, "--release", "r-layer", "--log", join(folder, "empty-log"), "--out", withLayerOut, "--layer-name", "extra", "--layer-sha256", layerSha, "--layer-bytes", layerBytes]);
+  const recordWithLayer = withLayer.status === 0 ? JSON.parse(readFileSync(withLayerOut, "utf8")) : {};
+  const half = tool(["record", "--commit", commit, "--sha256", sha, "--bytes", bytes, "--release", "r-half", "--log", join(folder, "empty-log"), "--out", join(folder, "half.json"), "--layer-name", "extra"]);
+  expect(
+    "record: a layer sent beside the release is named with its sha256 and size; a record without one has no such field; half a layer is refused",
+    JSON.stringify(recordWithLayer.layer) === JSON.stringify({ name: "extra", sha256: layerSha, bytes: Number(layerBytes) }) && Object.keys(recordWithLayer).join() === "schema,service,repository,sequence,release,commit,archive,layer,deployedAt,previous" && !("layer" in recordOne) && half.status === 1,
+    [recordWithLayer, half.stderr],
+  );
+
   const cosign = spawnSync("cosign", ["version"], { encoding: "utf8" });
   if (cosign.error !== undefined) {
     console.log("skipped: cosign is not installed, so signing and checking are not tried");
@@ -98,6 +128,15 @@ if (!hasCommit) {
     const verify = (args) => tool(["verify", ...args, "--key", pub, "--log", log, "--no-tlog"]);
     const good = verify(["--record", two.out]);
     expect("verify: a signed, logged record whose archive is made again from the commit passes", signed.status === 0 && good.status === 0 && !/FAIL/.test(good.stdout), [signed.stderr, good.stdout, good.stderr]);
+    // A release with a layer: the record checks as any other, and the check says a layer runs.
+    const layered = join(folder, "layered");
+    spawnSync("mkdir", ["-p", layered]);
+    const layeredOut = join(folder, "layered.json");
+    const layeredName = tool(["record", "--commit", commit, "--sha256", sha, "--bytes", bytes, "--release", "r3", "--log", layered, "--out", layeredOut, "--layer-name", "extra", "--layer-sha256", layerSha, "--layer-bytes", layerBytes]).stdout.trim();
+    sign(layeredOut);
+    writeFileSync(join(layered, layeredName), readFileSync(layeredOut));
+    const withLayerCheck = tool(["verify", "--record", layeredOut, "--key", pub, "--log", layered, "--no-tlog"]);
+    expect("verify: a record that names a layer passes, and the check prints the layer's name and sha256", withLayerCheck.status === 0 && !/FAIL/.test(withLayerCheck.stdout) && withLayerCheck.stdout.includes(`a layer that is not in this repository: extra, sha256 ${layerSha}`), [withLayerCheck.stdout, withLayerCheck.stderr]);
     const all = tool(["verify-log", "--key", pub, "--log", log, "--no-tlog"]);
     expect("verify-log: the whole chain passes", all.status === 0 && /all 2 records hold/.test(all.stdout), all.stdout);
 

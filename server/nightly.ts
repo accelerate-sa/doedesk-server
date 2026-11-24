@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The nightly job, as its own short-lived process: deletes what is no longer kept and rolls old
  * usage days into months (src/retention.ts), the work Cloudflare's cron trigger used to start.

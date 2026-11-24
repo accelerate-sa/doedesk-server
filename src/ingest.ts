@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * Usage data from the apps (which features are used), the choice an installation made about it,
  * and error reports. None of it is tied to an account: these routes take no sign-in, ignore one

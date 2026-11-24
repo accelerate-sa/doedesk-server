@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * Every setting the server takes, read from the environment. systemd hands them over from a file
  * only root can read (`/etc/doedesk/api.env`); `docs/variables.md` lists each one.
@@ -8,7 +10,8 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { priceSetting } from "../src/cost.ts";
+import { PRICE_SETTINGS, priceSetting } from "../src/cost.ts";
+import { WORKER_SETTING_NAMES, workerSettingProblems } from "../src/worker-regions.ts";
 import type { SmtpSettings } from "./smtp.ts";
 
 export type Stage = "production" | "rehearsal" | "test";
@@ -27,6 +30,11 @@ export interface ServerConfig {
    * unless DOEDESK_RELEASE_DIR says otherwise. See docs/releases.md.
    */
   readonly releaseDir: string;
+  /**
+   * Where the source of the running service is, told at GET /v1/source. The published repository
+   * unless DOEDESK_SOURCE_URL says otherwise: whoever runs a changed copy names their own.
+   */
+  readonly sourceUrl: string;
   readonly geoFile: string;
   readonly geoMaxAgeDays: number;
   readonly trustedProxies: ReadonlyArray<string>;
@@ -46,6 +54,11 @@ const PASSED_TO_HANDLERS = [
   "ENGINE_TOKEN",
   "ENGINE_PRICE_PER_1000_UNITS",
   "ENGINE_PRICE_PER_1000_PAGES",
+  // The worker that reads sealed documents (src/worker-chat.ts).
+  ...WORKER_SETTING_NAMES,
+  "WORKER_PRICE_PER_1M_INPUT_TOKENS",
+  "WORKER_PRICE_PER_1M_OUTPUT_TOKENS",
+  "WORKER_OPEN",
   "AUTHENTICA_API_KEY",
   "JWT_PRIVATE_JWK",
   "ADMIN_KEY",
@@ -94,6 +107,8 @@ export const readConfig = (source: Readonly<Record<string, string | undefined>>)
 
   const vars: Record<string, string> = {};
   for (const name of PASSED_TO_HANDLERS) if (get(name) !== "") vars[name] = get(name);
+  // Settings of a layer beside the service (server/extension.ts): passed on as they are.
+  for (const name of Object.keys(source)) if (name.startsWith("EXT_") && get(name) !== "") vars[name] = get(name);
 
   // The signing key and the admin key have no defaults anywhere.
   try {
@@ -107,9 +122,11 @@ export const readConfig = (source: Readonly<Record<string, string | undefined>>)
   // Detection and reading have one place to go: the engine.
   if ((vars.ENGINE_URL ?? "") === "") problems.push("ENGINE_URL (the detection and reading engine) is not set");
   else if (!/^https?:\/\//.test(vars.ENGINE_URL ?? "")) problems.push("ENGINE_URL must start with http:// or https://");
-  for (const name of ["ENGINE_PRICE_PER_1000_UNITS", "ENGINE_PRICE_PER_1000_PAGES"] as const) {
+  for (const name of PRICE_SETTINGS) {
     if (vars[name] !== undefined && priceSetting(vars[name]) === undefined) problems.push(`${name} must be a number of US dollars, such as 1.25`);
   }
+  // The worker is optional, region by region: a region without a key says its worker is not available.
+  problems.push(...workerSettingProblems(vars));
 
   const smtpHost = get("SMTP_HOST");
   const smtp: SmtpSettings | null =
@@ -147,6 +164,7 @@ export const readConfig = (source: Readonly<Record<string, string | undefined>>)
     jobsPath: resolve(get("DOEDESK_JOBS_DATABASE") || join(dirname(databasePath || "."), "jobs.sqlite")),
     migrationsDir: resolve(get("DOEDESK_MIGRATIONS_DIR") || join(ROOT, "migrations")),
     releaseDir: resolve(get("DOEDESK_RELEASE_DIR") || ROOT),
+    sourceUrl: get("DOEDESK_SOURCE_URL") || "https://github.com/accelerate-sa/doedesk-server",
     geoFile: get("DOEDESK_GEO_FILE") === "" ? "" : resolve(get("DOEDESK_GEO_FILE")),
     geoMaxAgeDays: number("DOEDESK_GEO_MAX_AGE_DAYS", 100, 1, 3650),
     trustedProxies: get("DOEDESK_TRUSTED_PROXIES").split(/[\s,]+/).filter((entry) => entry !== ""),

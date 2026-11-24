@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 """Lists the SEV-SNP launch measurements in Oracle's reference-value files.
 
 Oracle ships them in the veraison-cocli package (Oracle Linux 9, repository ol9_oci_included or

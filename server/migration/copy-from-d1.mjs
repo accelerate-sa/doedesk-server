@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Copies the D1 database into a new SQLite file and proves the copy is exact.
 //
 //   node server/migration/copy-from-d1.mjs --out <private folder> [--from d1:remote] [--name doedesk.sqlite]

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Copies the folder Litestream keeps (server/ops/litestream.yml) to the replica bucket in Oracle
 # Object Storage, Jeddah. Run once a minute by doedesk-replica-sync.timer.
 #

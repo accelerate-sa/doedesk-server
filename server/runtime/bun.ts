@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Bun: its built-in SQLite and HTTP server.
 import { Database } from "bun:sqlite";
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Runs the service on this machine for a test: a throwaway local database with every migration
 // applied, a stand-in for the detection and reading engine, and the service pointed at both.
 //
@@ -143,6 +145,164 @@ export const startEngineStub = async () => {
   return { origin: `http://127.0.0.1:${server.address().port}`, seen, stop };
 };
 
+/** The bearer token the services started for a worker test give the stand-in worker. Made up for the run. */
+export const WORKER_KEY = `stub-worker-${randomBytes(9).toString("hex")}`;
+
+/** The tokens the stand-in worker reports for what it was sent: one per character, a rule of its own. */
+export const workerTokens = (messages) => messages.reduce((total, message) => total + message.content.length, 0);
+export const WORKER_ANSWER_TOKENS = 7;
+/** Who the stand-in says served an answer, as OpenRouter does in `provider`. */
+export const WORKER_STUB_PROVIDER = "StubHost";
+
+/**
+ * Stands in for one region's upstream (src/worker-regions.ts): a server that speaks the Chat
+ * Completions format at `<origin>/openai/v1/chat/completions`. A service is pointed at it with
+ * `vars: { WORKER_SA_URL: worker.url, WORKER_SA_API_KEY: WORKER_KEY }`, and at three of them with
+ * `workerVars` below.
+ *
+ * It records each request as it arrived (`seen.requests`: path, authorization, every header, the
+ * body) and each answer it gave, as the exact text (`seen.answers`). It answers a canned completion
+ * with a `usage` object and names who served it (`provider`). Markers in the messages change that:
+ *   "tokens=N"         reports N tokens sent instead of counting characters
+ *   "[[echo]]"         answers with the text of the last message, so the service carries it back
+ *   "[[off-region]]"   says "Elsewhere" served it; "[[no-region]]" names nobody
+ *   "[[no-usage]]"     leaves the `usage` object out
+ *   "[[not-json]]"     answers 200 with a body that is not JSON
+ *   "[[worker-down]]"  fails (500) with a body that repeats what it was sent
+ *   "[[worker-refuses]]" refuses (400) with a body that repeats what it was sent
+ *   "[[worker-json-fails]]" refuses (400, code json_validate_failed), repeating what it was sent
+ *   "[[worker-busy]]"  429 with `retry-after: 7`; "[[busy-no-wait]]" 429 without it
+ *   "[[refuse-once]]"  429 with `retry-after: 1` the first time a request holds it, then an answer
+ *   "[[slow=N]]"       answers after N milliseconds
+ *   "[[other-model]]"  the answer names another model than the one asked for
+ *   "[[data-region=X]]" its record of the call says data region X, in place of "europe"
+ * `failWith`, when given, is added to the body of every failure: a test's own marker.
+ *
+ * `GET <url>/models` answers `models`, a list a test may replace: each region's usual model, said
+ * to be hosted in Saudi Arabia. `seen.modelLists` counts how often it was read, `seen.times` when
+ * each request arrived, and `seen.mostAtOnce` the most requests that were in flight together.
+ *
+ * Each answer carries an id (`x-generation-id`), and `GET <url>/generation?id=` answers the record
+ * of that call as OpenRouter does: who served it and in which data region. `seen.recordsRead` is
+ * every id asked for, with the authorization it was asked with.
+ */
+export const startWorkerStub = async ({ failWith = "" } = {}) => {
+  const seen = { requests: [], answers: [], times: [], modelLists: 0, mostAtOnce: 0, recordsRead: [] };
+  const models = ["qwen/qwen3.8-27b", WORKER_EU_TEST_MODEL, "thinkingmachines/inkling-2-mini", WORKER_ANOTHER_MODEL].map((id) => ({ id, object: "model", hosted_in: "saudi" }));
+  const records = new Map();
+  const refusedOnce = new Set();
+  let inFlight = 0;
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/openai/v1/models") {
+      seen.modelLists += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      return response.end(JSON.stringify({ object: "list", data: models }));
+    }
+    if (request.method === "GET" && request.url.startsWith("/openai/v1/generation?id=")) {
+      const id = decodeURIComponent(request.url.slice("/openai/v1/generation?id=".length));
+      seen.recordsRead.push({ id, authorization: request.headers.authorization ?? "" });
+      const record = records.get(id);
+      response.writeHead(record === undefined ? 404 : 200, { "content-type": "application/json" });
+      return response.end(JSON.stringify(record === undefined ? { error: { message: "no such generation" } } : { data: { id, ...record } }));
+    }
+    inFlight += 1;
+    seen.mostAtOnce = Math.max(seen.mostAtOnce, inFlight);
+    response.once("close", () => {
+      inFlight -= 1;
+    });
+    const send = (status, text, headers = {}) => {
+      seen.answers.push(text);
+      response.writeHead(status, { "content-type": "application/json", ...headers });
+      response.end(text);
+    };
+    try {
+      const raw = (await readBody(request)).toString("utf8");
+      const body = JSON.parse(raw);
+      seen.requests.push({ method: request.method, path: request.url, authorization: request.headers.authorization ?? "", headers: { ...request.headers }, body });
+      seen.times.push(Date.now());
+      if (request.method !== "POST" || request.url !== "/openai/v1/chat/completions") return send(404, JSON.stringify({ error: { message: "stub has no such route" } }));
+      const all = body.messages.map((message) => message.content).join("\n");
+      const has = (marker) => all.includes(marker);
+      const slow = /\[\[slow=(\d+)\]\]/.exec(all)?.[1];
+      if (slow !== undefined) await new Promise((resolve) => setTimeout(resolve, Number(slow)));
+      if (has("[[refuse-once]]") && !refusedOnce.has(all)) {
+        refusedOnce.add(all);
+        return send(429, JSON.stringify({ error: { message: `Too many requests at once ${failWith}`, code: "concurrency_limit_exceeded" } }), { "retry-after": "1" });
+      }
+      if (has("[[worker-down]]")) return send(500, JSON.stringify({ error: { message: `stub worker down ${failWith}; it was sent: ${all}` } }));
+      if (has("[[worker-json-fails]]")) return send(400, JSON.stringify({ error: { message: `Failed to generate JSON ${failWith}; it was sent: ${all}`, code: "json_validate_failed", failed_generation: all } }));
+      if (has("[[worker-refuses]]")) return send(400, JSON.stringify({ error: { message: `context length exceeded ${failWith}; it was sent: ${all}` } }));
+      if (has("[[worker-busy]]")) return send(429, JSON.stringify({ error: { message: `rate limit reached ${failWith}`, code: "rate_limit_exceeded" } }), { "retry-after": "7" });
+      if (has("[[busy-no-wait]]")) return send(429, JSON.stringify({ error: { message: `rate limit reached ${failWith}` } }));
+      if (has("[[not-json]]")) return send(200, `<html>not a completion ${failWith}</html>`);
+      const stated = /tokens=(\d+)/.exec(all)?.[1];
+      const sentTokens = stated === undefined ? workerTokens(body.messages) : Number(stated);
+      const provider = has("[[off-region]]") ? "Elsewhere" : WORKER_STUB_PROVIDER;
+      const generation = `gen-stub-${seen.requests.length}`;
+      records.set(generation, { provider_name: provider, data_region: /\[\[data-region=([^\]]+)\]\]/.exec(all)?.[1] ?? "europe" });
+      const completion = {
+        id: generation,
+        object: "chat.completion",
+        created: 1_795_000_000,
+        model: has("[[other-model]]") ? "someone-elses/model" : body.model,
+        ...(has("[[no-region]]") ? {} : { provider }),
+        choices: [{ index: 0, message: { role: "assistant", content: has("[[echo]]") ? `The worker read: ${body.messages.at(-1).content}` : "The contract is dated 3 March. العقد مؤرخ" }, finish_reason: "stop" }],
+        ...(has("[[no-usage]]") ? {} : { usage: { prompt_tokens: sentTokens, completion_tokens: WORKER_ANSWER_TOKENS, total_tokens: sentTokens + WORKER_ANSWER_TOKENS } }),
+      };
+      // Spaced in a way of its own, so a service that passes the answer on unchanged can be told
+      // from one that reads it and writes it out again.
+      return send(200, JSON.stringify(completion, null, 3), { "x-generation-id": generation });
+    } catch (cause) {
+      send(500, JSON.stringify({ error: { message: String(cause) } }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const stop = () =>
+    new Promise((resolve) => {
+      server.close(resolve);
+      server.closeAllConnections();
+    });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  return { origin, url: `${origin}/openai/v1`, seen, models, stop };
+};
+
+/** The three regions a worker can run in, as the service names them. */
+export const WORKER_REGIONS = ["sa", "eu", "global"];
+
+/** The key the service is given for one region's stand-in: its own, so a test can tell whose was sent. */
+export const workerKeyFor = (region) => `${WORKER_KEY}-${region}`;
+
+/**
+ * One stand-in upstream per region, and the settings that point a service at them. `without`
+ * leaves regions with no key, which is how a region with no worker is set up.
+ */
+/**
+ * The EU region has no worker of its own (src/worker-regions.ts): none is offered there yet. In
+ * these tests it is given one by settings, as any region can be: an open-weight model at the
+ * stand-in's address, held to one host there, whose record of a call must say Europe.
+ */
+export const WORKER_EU_TEST_MODEL = "qwen/qwen3.8-27b:eu-test";
+export const WORKER_EU_TEST_ROUTE = { order: ["stub-host/europe"], allow_fallbacks: false, data_collection: "deny", zdr: true };
+/** Another name for an open-weight model, for a test that sets a region's model. */
+export const WORKER_ANOTHER_MODEL = "qwen/qwen3.8-27b:another";
+
+export const startWorkerStubs = async ({ failWith = "", without = [] } = {}) => {
+  const stubs = Object.fromEntries(await Promise.all(WORKER_REGIONS.map(async (region) => [region, await startWorkerStub({ failWith })])));
+  const vars = Object.fromEntries(
+    WORKER_REGIONS.flatMap((region) => [
+      [`WORKER_${region.toUpperCase()}_URL`, stubs[region].url],
+      ...(without.includes(region) ? [] : [[`WORKER_${region.toUpperCase()}_API_KEY`, workerKeyFor(region)]]),
+    ]),
+  );
+  Object.assign(vars, {
+    WORKER_EU_MODEL: WORKER_EU_TEST_MODEL,
+    WORKER_EU_PROVIDER: JSON.stringify(WORKER_EU_TEST_ROUTE),
+    WORKER_EU_EXPECTED_PROVIDER: WORKER_STUB_PROVIDER,
+    WORKER_EU_EXPECTED_DATA_REGION: "europe",
+  });
+  return { ...stubs, vars, stop: () => Promise.all(WORKER_REGIONS.map((region) => stubs[region].stop())) };
+};
+
 const wrangler = (args, options = {}) => {
   const result = spawnSync("npx", ["wrangler", ...args], { cwd: ROOT, encoding: "utf8", ...options });
   if (result.status !== 0) throw new Error(`wrangler ${args.join(" ")} failed:\n${result.stdout}\n${result.stderr}`);
@@ -208,6 +368,9 @@ export const startServerService = async ({ seedSql, vars = {}, runtime = TARGET 
       }
     }
   }
+  // A database brought from elsewhere has this service's tables; a layer beside the service
+  // (server/extension.ts), when there is one, needs its own before the server will start.
+  if (given !== undefined) run("migrate.ts", ["--layer"]);
   const child = spawn(command[0], [...command.slice(1), join(ROOT, "server", "main.ts")], { cwd: ROOT, env: environment, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   child.stdout.on("data", (chunk) => (log += chunk));

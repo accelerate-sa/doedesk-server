@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // The parts of Bun this folder uses, declared by hand: Bun's own type package redeclares the
 // web platform's globals and cannot be loaded beside the Workers types that `src/` is written to.
 declare module "bun:sqlite" {

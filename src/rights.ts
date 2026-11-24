@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The rights the Privacy Policy gives a person (section 13), as things the service does:
  * deleting an account with everything tied to it, giving a copy of everything held about it, and
@@ -20,6 +22,7 @@ import { acceptanceStatus } from "./acceptance.ts";
 import { authenticate, bearerToken } from "./accounts.ts";
 import { ApiError, daysBefore, type Env, json, nowIso, rateLimit, sha256Hex } from "./http.ts";
 import { ACCEPTANCE_YEARS_AFTER_CLOSURE, DELETE_NEEDS_SIGN_IN_WITHIN_MINUTES, DELETION_RECEIPT_DAYS } from "./periods.ts";
+import { extension } from "./extension.ts";
 import { COUNTERS } from "./usage.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -86,16 +89,21 @@ export const accountDeletionStatements = (env: Env, accountIds: ReadonlyArray<st
         ["'sms:phone:' || phone || ':60'", "phone"],
         ["'sms:phone:' || phone || ':3600'", "phone"],
         ["'export:' || id || ':3600'", "id"],
+        ["'region:' || id || ':3600'", "id"],
       ].map(([key, column]) =>
         env.DB.prepare(`DELETE FROM rate_limits WHERE key IN (SELECT ${key} FROM users WHERE id IN (${marks}) AND ${column} IS NOT NULL)`).bind(...ids),
       ),
       env.DB.prepare(`DELETE FROM sessions WHERE user_id IN ${accounts}`).bind(...ids),
       env.DB.prepare(`DELETE FROM usage_daily WHERE user_id IN ${accounts}`).bind(...ids),
       env.DB.prepare(`DELETE FROM usage WHERE user_id IN ${accounts}`).bind(...ids),
+      // The history of the account's region. The region itself goes with the account's row.
+      env.DB.prepare(`DELETE FROM region_changes WHERE user_id IN ${accounts}`).bind(...ids),
       // The proof of acceptance stays for a fixed time, cut down to what proves it (see the top of this file).
       env.DB.prepare(
         `UPDATE acceptances SET account_closed_at = ?, login_request_id = NULL, country = NULL WHERE account_closed_at IS NULL AND user_id IN ${accounts}`,
       ).bind(closedAt, ...ids),
+      // What a layer beside the service holds about the accounts (src/extension.ts).
+      ...(extension().deletionStatements?.(env, ids) ?? []),
       // Last: the account, with the number or address and the onboarding answers.
       env.DB.prepare(`DELETE FROM users WHERE id IN (${marks})`).bind(...ids),
     );
@@ -199,6 +207,8 @@ interface UserRow {
   readonly workplace: string | null;
   readonly profile_at: string | null;
   readonly last_active_at: string | null;
+  readonly region: string;
+  readonly region_updated_at: string | null;
 }
 
 /**
@@ -208,7 +218,7 @@ interface UserRow {
  */
 export const exportAccount = async (env: Env, accountId: string, currentTokenHash: string | null = null) => {
   const user = await env.DB.prepare(
-    "SELECT id, email, phone, created_at, country, signup_method, field, field_other, workplace, profile_at, last_active_at FROM users WHERE id = ?",
+    "SELECT id, email, phone, created_at, country, signup_method, field, field_other, workplace, profile_at, last_active_at, region, region_updated_at FROM users WHERE id = ?",
   )
     .bind(accountId)
     .first<UserRow>();
@@ -218,9 +228,10 @@ export const exportAccount = async (env: Env, accountId: string, currentTokenHas
     ...(user.email === null ? [] : [`mail:to:${user.email}:60`, `mail:to:${user.email}:3600`]),
     ...(user.phone === null ? [] : [`sms:phone:${user.phone}:60`, `sms:phone:${user.phone}:3600`]),
     `export:${user.id}:3600`,
+    `region:${user.id}:3600`,
   ];
   const marks = (values: ReadonlyArray<unknown>): string => values.map(() => "?").join(", ");
-  const [sessions, attempts, daily, monthly, acceptances, requests, counters] = (await env.DB.batch([
+  const [sessions, attempts, daily, monthly, acceptances, requests, counters, regionChanges] = (await env.DB.batch([
     env.DB.prepare("SELECT token_hash, client, device, created_at, last_used_at, signed_in_at, purpose FROM sessions WHERE user_id = ? ORDER BY created_at").bind(accountId),
     env.DB.prepare(
       `SELECT kind, client, device, country, city, attempts, status, created_at, expires_at, acceptance FROM login_requests WHERE identifier IN (${marks(identifiers)}) ORDER BY created_at`,
@@ -233,9 +244,11 @@ export const exportAccount = async (env: Env, accountId: string, currentTokenHas
     ).bind(accountId),
     env.DB.prepare("SELECT handled_at, type, channel, outcome FROM rights_requests WHERE account_id = ? ORDER BY handled_at").bind(accountId),
     env.DB.prepare(`SELECT key, bucket, count FROM rate_limits WHERE key IN (${marks(counterKeys)})`).bind(...counterKeys),
+    env.DB.prepare("SELECT from_region, to_region, changed_at, client FROM region_changes WHERE user_id = ? ORDER BY changed_at").bind(accountId),
   ])) as Array<D1Result<Record<string, unknown>>>;
   const rows = (result: D1Result<Record<string, unknown>> | undefined) => result?.results ?? [];
   return {
+    ...((await extension().exportAccount?.(env, accountId)) ?? {}),
     exportedAt: nowIso(),
     about: "Everything DoeDesk Cloud holds about this account. Times are UTC. See https://doedesk.com/privacy.",
     account: {
@@ -246,7 +259,11 @@ export const exportAccount = async (env: Env, accountId: string, currentTokenHas
       signUpMethod: user.signup_method,
       signUpCountry: user.country,
       lastActiveAt: user.last_active_at,
+      // Where the worker that reads this account's sealed files runs: sa, eu or global.
+      region: user.region,
+      regionUpdatedAt: user.region_updated_at,
     },
+    regionHistory: rows(regionChanges),
     onboardingAnswers: {
       field: user.field,
       fieldOther: user.field_other,
@@ -260,7 +277,7 @@ export const exportAccount = async (env: Env, accountId: string, currentTokenHas
       acceptance: typeof acceptance === "string" ? (JSON.parse(acceptance) as unknown) : null,
     })),
     usage: {
-      about: "Counts only. No text, file or detected item is stored. `daily` is per UTC day and kind of app; `monthly` holds older months as one total each.",
+      about: "Counts only. No text, file or detected item is stored, and nothing sent to the worker or answered by it. `daily` is per UTC day and kind of app; `monthly` holds older months as one total each.",
       daily: rows(daily),
       monthly: rows(monthly),
     },
@@ -269,7 +286,7 @@ export const exportAccount = async (env: Env, accountId: string, currentTokenHas
     notIncluded: [
       "Usage data sent by the app: it carries an installation identifier and never the account, so it cannot be found from the account. Quote the installation identifier shown in Settings to privacy@doedesk.com.",
       "Messages you sent to hello@, privacy@, security@ or legal@doedesk.com: ask at privacy@doedesk.com.",
-      "Text and files sent for detection and reading: they are not stored.",
+      "Text and files sent for detection and reading, and what is sent to the worker and what it answers: they are not stored.",
       "Our hosting provider's technical request logs, kept for up to 7 days.",
     ],
   };

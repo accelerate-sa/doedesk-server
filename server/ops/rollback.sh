@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Puts the previous release back and restarts the API on it.
 #
 #   server/ops/rollback.sh <ssh host> [release folder name]

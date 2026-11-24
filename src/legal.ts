@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The one place that says which Terms of Use and Privacy Policy are in force.
  *
@@ -89,7 +91,7 @@ export const legalSummary = (env: Pick<Env, "REQUIRE_ACCEPTANCE">) => {
     acceptance: {
       /** Starting a sign-in without an `acceptance` object is refused. */
       requiredToSignIn: rule !== "off",
-      /** Detection and reading are refused for an account whose acceptance is outstanding. */
+      /** Detection, reading and the worker are refused for an account whose acceptance is outstanding. */
       requiredToUse: rule === "all",
     },
   };

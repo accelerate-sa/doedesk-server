@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Proves, on this machine, what the Privacy Policy and the Terms of Use promise of the service:
 //   - acceptance of the Terms is recorded, and required when the switch says so; an app that sends
 //     none can still sign in while the switch is off, and its account is marked as outstanding;
@@ -265,7 +267,7 @@ const mustNotBeLogged = new Set();
 // First copy: nothing required, mail forwarding set. This is how the service is deployed first.
 // ================================================================================================
 {
-  const service = await startLocalService({ seedSql: seedA, vars: { MAIL_FORWARD_TO: "owner@mailbox.example" } });
+  const service = await startLocalService({ seedSql: seedA, vars: { MAIL_FORWARD_TO: "owner@mailbox.example", WORKER_OPEN: "1" } });
   const { call, admin, adminPost, count, confirm, signIn, sendMail } = against(service);
   try {
     // --- The versions in force -------------------------------------------------------------------
@@ -395,6 +397,9 @@ const mustNotBeLogged = new Set();
     mustNotBeLogged.add(extra.json?.token);
     const pending = await call("POST", "/v1/auth/phone/start", { body: { phone: "0500009001" }, headers: from("SA") }); // someone else's attempt
     mustNotBeLogged.add("559990001");
+    // The account was made from Saudi Arabia, so it started there. The person moves it to the EU; so does a bystander.
+    const moved = await call("POST", "/v1/me/region", { body: { region: "eu" }, token: person.token });
+    await call("POST", "/v1/me/region", { body: { region: "eu" }, token: token("stale") });
     const copy = await call("GET", "/v1/me/export", { token: person.token });
     const held = {
       user: service.query("SELECT * FROM users WHERE id = ?", person.accountId)[0],
@@ -402,7 +407,8 @@ const mustNotBeLogged = new Set();
       daily: service.query("SELECT * FROM usage_daily WHERE user_id = ?", person.accountId),
       attempts: count("login_requests WHERE identifier = ?", "new.app@person.example"),
     };
-    same("export: the account, as held", copy.json?.account, { id: person.accountId, email: "new.app@person.example", phone: null, createdAt: held.user.created_at, signUpMethod: "email", signUpCountry: "SA", lastActiveAt: null });
+    same("export: the account, as held, with the region its worker runs in", copy.json?.account, { id: person.accountId, email: "new.app@person.example", phone: null, createdAt: held.user.created_at, signUpMethod: "email", signUpCountry: "SA", lastActiveAt: null, region: "eu", regionUpdatedAt: moved.json?.regionUpdatedAt });
+    same("export: every change of region, and nobody else's", copy.json?.regionHistory, [{ from_region: "sa", to_region: "eu", changed_at: held.user.region_updated_at, client: "desktop" }]);
     same("export: the onboarding answers", { ...copy.json?.onboardingAnswers, answeredAt: undefined }, { field: "other", fieldOther: "Notary", workplace: "small_company" });
     same("export: every sign-in, marking the one that asked", copy.json?.signIns?.map(({ thisSignIn, ...rest }) => rest), held.sessions);
     same("export: three sign-ins, one of them this one", [copy.json?.signIns?.length, copy.json?.signIns?.filter((item) => item.thisSignIn).length], [3, 1]);
@@ -417,7 +423,7 @@ const mustNotBeLogged = new Set();
     same("export: needs a sign-in", (await call("GET", "/v1/me/export")).status, 401);
 
     // --- Deleting the account -------------------------------------------------------------------
-    const tables = { users: "id", sessions: "user_id", usage_daily: "user_id", usage: "user_id", acceptances: "user_id" };
+    const tables = { users: "id", sessions: "user_id", usage_daily: "user_id", usage: "user_id", acceptances: "user_id", region_changes: "user_id" };
     const rowsOf = (accountId) => Object.fromEntries(Object.entries(tables).map(([table, column]) => [table, count(`${table} WHERE ${column} = ?`, accountId)]));
     const everyoneElse = () => Object.fromEntries(Object.keys(tables).map((table) => [table, count(`${table} WHERE ${tables[table]} <> ?`, person.accountId)]));
     const othersBefore = everyoneElse();
@@ -431,10 +437,10 @@ const mustNotBeLogged = new Set();
     same("delete: an unknown token is refused", (await call("DELETE", "/v1/me", { token: "dd_unknown" })).status, 401);
     same("delete: the web app's preflight allows the method", (await call("OPTIONS", "/v1/me")).headers.get("access-control-allow-methods"), "GET, POST, DELETE, OPTIONS");
 
-    same("delete: before, the account has rows in every table", rowsOf(person.accountId), { users: 1, sessions: 3, usage_daily: 1, usage: 0, acceptances: 1 });
+    same("delete: before, the account has rows in every table", rowsOf(person.accountId), { users: 1, sessions: 3, usage_daily: 1, usage: 0, acceptances: 1, region_changes: 1 });
     const deleted = await call("DELETE", "/v1/me", { token: again.token });
     expect("delete: a sign-in verified minutes ago deletes, and the confirmation names the account and what is kept", deleted.status === 200 && deleted.json.deleted === true && deleted.json.accountId === person.accountId && deleted.json.kept?.[0]?.record === "terms_acceptance" && Math.abs(Date.parse(deleted.json.kept[0].until) - (Date.now() + 5 * 365.25 * DAY)) < 3 * DAY, deleted);
-    same("delete: every row of the account is gone, except the proof of acceptance", rowsOf(person.accountId), { users: 0, sessions: 0, usage_daily: 0, usage: 0, acceptances: 1 });
+    same("delete: every row of the account is gone, except the proof of acceptance", rowsOf(person.accountId), { users: 0, sessions: 0, usage_daily: 0, usage: 0, acceptances: 1, region_changes: 0 });
     same("delete: its sign-in attempts and counters are gone", [count("login_requests WHERE identifier = ?", "new.app@person.example"), count("rate_limits WHERE key LIKE ?", "%new.app@person.example%"), count("rate_limits WHERE key LIKE ?", `%${person.accountId}%`)], [0, 0, 0]);
     same("delete: no row of any other account was touched", everyoneElse(), othersBefore);
     same("delete: exactly one account went, and nothing that is not tied to an account", { users: count("users"), mail: count("contact_mail"), events: count("events") }, { ...totalsBefore, users: totalsBefore.users - 1 });
@@ -695,7 +701,7 @@ const mustNotBeLogged = new Set();
   ].join("\n");
   const service = await startLocalService({
     seedSql: seedB,
-    vars: { REQUIRE_ACCEPTANCE: "all", SIGNUP_BLOCKED_COUNTRIES: "IR, kp,UA-43", SIGNUP_BLOCK_EU_UK: "1", USAGE_DATA_RANDOM_IDENTIFIERS_ONLY: "1" },
+    vars: { WORKER_OPEN: "1", REQUIRE_ACCEPTANCE: "all", SIGNUP_BLOCKED_COUNTRIES: "IR, kp,UA-43", SIGNUP_BLOCK_EU_UK: "1", USAGE_DATA_RANDOM_IDENTIFIERS_ONLY: "1" },
   });
   const { call, admin, count, signIn, sendMail } = against(service);
   try {
@@ -716,7 +722,8 @@ const mustNotBeLogged = new Set();
     same("required: an earlier account can still read its state, which says it is paused", [earlyMe.status, earlyMe.json?.acceptance?.outstanding, earlyMe.json?.acceptance?.blocked], [200, true, true]);
     const pausedText = await call("POST", "/v1/detect", { body: { texts: ["Jane Doe"] }, token: early });
     const pausedFile = await call("POST", "/v1/ocr", { raw: Buffer.from("%PDF-1.7 pages=1"), token: early, headers: { "content-type": "application/pdf" } });
-    same("required: detection and reading are refused for it, with a code the app shows the sheet for", [pausedText.status, pausedText.json?.error?.code, pausedText.json?.error?.legal?.terms?.url?.en, pausedFile.status, pausedFile.json?.error?.code], [403, "terms_update_required", "https://doedesk.com/terms", 403, "terms_update_required"]);
+    const pausedWorker = await call("POST", "/v1/worker/chat/completions", { body: { messages: [{ role: "user", content: "A sealed document." }] }, token: early });
+    same("required: detection, reading and the worker are refused for it, with a code the app shows the sheet for", [pausedText.status, pausedText.json?.error?.code, pausedText.json?.error?.legal?.terms?.url?.en, pausedFile.status, pausedFile.json?.error?.code, pausedWorker.status, pausedWorker.json?.error?.code], [403, "terms_update_required", "https://doedesk.com/terms", 403, "terms_update_required", 403, "terms_update_required"]);
     same("required: nothing was sent to the engine or counted for the refused requests", [service.engine.seen.detect.length, service.engine.seen.ocr.length, count("usage_daily WHERE user_id = ?", id("before-terms"))], [1, 0, 0]);
     expect("required: it can still export and delete, which are its rights", (await call("GET", "/v1/me/export", { token: early })).status === 200 && (await call("DELETE", "/v1/me", { token: early })).json?.error?.code === "recent_sign_in_required");
 
@@ -736,12 +743,13 @@ const mustNotBeLogged = new Set();
       [
         [(await call("POST", "/v1/detect", { body: { texts: ["Jane Doe"] }, token: limited })).json?.error?.code],
         [(await call("POST", "/v1/ocr", { raw: Buffer.from("%PDF-1.7 pages=1"), token: limited, headers: { "content-type": "application/pdf" } })).json?.error?.code],
+        [(await call("POST", "/v1/worker/chat/completions", { body: { messages: [{ role: "user", content: "A sealed document." }] }, token: limited })).json?.error?.code],
         [(await call("POST", "/v1/auth/sessions", { body: { client: "web" }, token: limited })).json?.error?.code],
         [(await call("POST", "/v1/auth/token", { body: { audience: "doedesk-relay" }, token: limited })).json?.error?.code],
         [(await call("POST", "/v1/me/acceptance", { body: { acceptance: ACCEPTANCE }, token: limited })).json?.error?.code],
         [(await call("POST", "/v1/me/profile", { body: { field: "legal" }, token: limited })).json?.error?.code],
       ].flat(),
-      Array(6).fill("deletion_only_sign_in"),
+      Array(7).fill("deletion_only_sign_in"),
     );
     same("leaving: it can read the account and export it", [(await call("GET", "/v1/me", { token: limited })).status, (await call("GET", "/v1/me/export", { token: limited })).status], [200, 200]);
     same("leaving: the account's older sign-in, which is not fresh, still cannot delete", (await call("DELETE", "/v1/me", { token: token("leaver") })).json?.error?.code, "recent_sign_in_required");

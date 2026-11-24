@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+-- Copyright (C) 2026 Accelerate Technology Establishment
 -- Accounts move from email + password to phone codes and email links. Nothing but a test
 -- account existed before this, so the tables are rebuilt rather than migrated.
 DROP TABLE IF EXISTS signup_attempts;

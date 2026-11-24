@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Runs every suite against every form of the service and prints one line per run.
 //
 //   node server/test/run-all.mjs                 everything (about ten minutes)
@@ -86,6 +88,7 @@ for (const target of targets) {
     });
   }
   await record("usage-metering", target, () => run(NODE[0], [...NODE.slice(1), "test/usage-metering.mjs"], env));
+  await record("worker-chat", target, () => run(NODE[0], [...NODE.slice(1), "test/worker-chat.mjs"], env));
   await record("privacy-promises", target, () => run(NODE[0], [...NODE.slice(1), "test/privacy-promises.mjs"], env));
   await record("ocr-layout", target, () => run(NODE[0], [...NODE.slice(1), "test/ocr-layout.mjs"], env));
   await record("features", target, () => run(NODE[0], [...NODE.slice(1), "server/test/features.mjs"], env));

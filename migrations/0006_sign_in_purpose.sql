@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+-- Copyright (C) 2026 Accelerate Technology Establishment
 -- A sign-in made only to confirm "Delete my account".
 --
 -- When accepting the Terms is required to sign in, a person who has not accepted must still be

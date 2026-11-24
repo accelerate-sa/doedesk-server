@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * Builds the country file `server/geo.ts` reads, from DB-IP's free database in CSV form.
  *

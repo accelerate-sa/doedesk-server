@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Refreshes the country file the API reads (server/geo.ts) from DB-IP's free "IP to City Lite"
 # database, which is published monthly under CC BY 4.0 (https://db-ip.com/db/download/ip-to-city-lite).
 #

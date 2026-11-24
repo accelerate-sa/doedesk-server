@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * Metering: what each account used, per UTC day and per client, as counts. Nothing sent for
- * detection or reading is kept.
+ * detection or reading, or to the worker, is kept.
  *
  * `usage_daily` takes one upsert per request. `usage` holds, per account and month, what is not in
  * `usage_daily`: totals from before daily metering, and days the nightly job has rolled up. A
@@ -11,6 +13,8 @@ import { isFrozen } from "./maintenance.ts";
 
 export const MONTHLY_DETECT_CHARACTERS = 3_000_000;
 export const MONTHLY_OCR_PAGES = 200;
+/** Tokens sent to the worker, as its own answers count them (worker-chat.ts). */
+export const MONTHLY_WORKER_INPUT_TOKENS = 10_000_000;
 
 /** Daily rows older than this are rolled into monthly totals, a calendar month at a time. */
 export const DAILY_RETENTION_DAYS = 400;
@@ -35,6 +39,14 @@ export const COUNTERS = [
   "ocr_refused",
   "ocr_too_large",
   "ocr_failed",
+  // The worker (worker-chat.ts, migrations/0007). Tokens are the ones its answers report.
+  "worker_requests",
+  "worker_input_tokens",
+  "worker_output_tokens",
+  "worker_refused",
+  "worker_too_large",
+  "worker_failed",
+  "worker_off_region",
 ] as const;
 export type Counter = (typeof COUNTERS)[number];
 export type Counts = Partial<Record<Counter, number>>;
@@ -98,22 +110,32 @@ export const monthRows = (columns: string): string =>
   `UNION ALL SELECT ${columns} FROM usage_daily WHERE day >= ?1 || '-01' AND day <= ?1 || '-31'`;
 
 export const readUsage = async (env: Env, userId: string) => {
-  const columns = "detect_characters, ocr_pages, detect_requests, ocr_files";
+  const columns = "detect_characters, ocr_pages, detect_requests, ocr_files, worker_input_tokens, worker_requests";
   const month = utcMonth();
   const row = await env.DB.prepare(
     "SELECT COALESCE(SUM(detect_characters), 0) AS detect_characters, COALESCE(SUM(ocr_pages), 0) AS ocr_pages, " +
-      "COALESCE(SUM(detect_requests), 0) AS detect_requests, COALESCE(SUM(ocr_files), 0) AS ocr_files FROM (" +
+      "COALESCE(SUM(detect_requests), 0) AS detect_requests, COALESCE(SUM(ocr_files), 0) AS ocr_files, " +
+      "COALESCE(SUM(worker_input_tokens), 0) AS worker_input_tokens, COALESCE(SUM(worker_requests), 0) AS worker_requests FROM (" +
       `SELECT ${columns} FROM usage WHERE user_id = ?2 AND month = ?1 ` +
       `UNION ALL SELECT ${columns} FROM usage_daily WHERE user_id = ?2 AND day >= ?1 || '-01' AND day <= ?1 || '-31')`,
   )
     .bind(month, userId)
-    .first<{ detect_characters: number; ocr_pages: number; detect_requests: number; ocr_files: number }>();
+    .first<{
+      detect_characters: number;
+      ocr_pages: number;
+      detect_requests: number;
+      ocr_files: number;
+      worker_input_tokens: number;
+      worker_requests: number;
+    }>();
   return {
     month,
     detectCharacters: row?.detect_characters ?? 0,
     ocrPages: row?.ocr_pages ?? 0,
     detectRequests: row?.detect_requests ?? 0,
     ocrFiles: row?.ocr_files ?? 0,
+    workerInputTokens: row?.worker_input_tokens ?? 0,
+    workerRequests: row?.worker_requests ?? 0,
   };
 };
 

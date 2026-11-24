@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // The server's database wrapper against a real local D1, on the operations the code makes.
 //
 //   node server/test/d1-parity.mjs

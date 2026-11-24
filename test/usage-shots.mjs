@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Screenshots of the usage views of the owner's dashboard, with sample data, in light and dark at a
 // phone and a desktop width.
 //

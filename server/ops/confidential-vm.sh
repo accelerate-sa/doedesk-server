@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Settings that a confidential VM (AMD SEV-SNP on Oracle) needs and
 # an ordinary machine does not. Run as root, on the machine, after install.sh. Safe to run again.
 #

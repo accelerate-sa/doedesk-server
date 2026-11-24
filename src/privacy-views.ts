@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The owner's views for what the Privacy Policy and the Terms promise: who has accepted the Terms,
  * rights requests (export and deletion for requests that come by mail, and the log), contact mail,

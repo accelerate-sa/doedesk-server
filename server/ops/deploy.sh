@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Puts a version of the code on the machine, with its signed release record, and switches to it.
 # Run on the computer that holds the repositories:
 #
@@ -12,6 +14,12 @@
 #     private revision is only compared with it: server/, src/ and migrations/ must be the same in
 #     both, file for file, or nothing is sent. (package.json may differ: the private one also builds
 #     the website. The server reads only its "type".)
+#
+# A layer (docs/releases.md, "A layer beside the release"): code that runs beside the release and is
+# not part of the public repository. It is sent only when asked for with --layer, only from the
+# private repository, and the record says so: it names the layer and the sha256 of what was sent.
+# Without --layer the machine gets the public commit and nothing else, whatever the private
+# repository holds.
 #
 # Steps:
 #   1. The release archive is made (`node server/ops/release.mjs archive`: git archive of server/,
@@ -33,6 +41,13 @@
 # The last five releases are kept. To go back by hand: server/ops/rollback.sh <ssh host>.
 #
 # Options (each also as an environment variable, for scripts):
+#   --layer <folder>     DOEDESK_LAYER. From the private repository: also send that top-level
+#                        folder of the private revision, to run beside the release. It is unpacked
+#                        at <release>/<folder>, where the server looks for it, and named in the
+#                        record by its sha256. The public commit must hold no folder of that name.
+#   --dry-run            DOEDESK_DEPLOY_DRY_RUN=1. Do the comparison, make the archive (and the
+#                        layer's), print what would be sent and the record that would be signed,
+#                        and stop. Nothing is signed, logged, committed or sent.
 #   --first              also runs server/ops/install.sh on the machine (the user, the folders, the
 #                        pinned programs, the units) and makes the empty database. It starts
 #                        nothing: the settings come next (docs/variables.md).
@@ -54,9 +69,12 @@
 set -euo pipefail
 
 first="" ; unsigned="${DOEDESK_RELEASE_UNSIGNED:-}" ; unpublished="${DOEDESK_ALLOW_UNPUBLISHED:-}" ; drift_ok="${DOEDESK_ALLOW_DRIFT:-}"
+layer="${DOEDESK_LAYER:-}" ; dry="${DOEDESK_DEPLOY_DRY_RUN:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --first) first="yes"; shift ;;
+    --layer) layer="${2:?deploy: --layer needs a folder name}"; shift 2 ;;
+    --dry-run) dry="1"; shift ;;
     --unsigned) unsigned="1"; shift ;;
     --allow-unpublished) unpublished="1"; shift ;;
     --allow-drift) drift_ok="1"; shift ;;
@@ -65,7 +83,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 ssh_command="${DOEDESK_SSH:-ssh}"
-host="${1:?usage: deploy.sh [--first] [--unsigned] [--allow-unpublished] [--allow-drift] <ssh host> [revision]}"
+host="${1:?usage: deploy.sh [--first] [--unsigned] [--allow-unpublished] [--allow-drift] [--layer <folder>] [--dry-run] <ssh host> [revision]}"
 root="$(git rev-parse --show-toplevel)"
 here="$root/server/ops"
 loud() { printf '\n\033[1;31m!!! %s\033[0m\n\n' "$*" >&2; }
@@ -89,6 +107,7 @@ if [ -n "$(git -C "$public" status --porcelain -- server src migrations docs pac
 fi
 
 # From the private repository: the code tested there must be the code sent.
+compared="run from the public repository: nothing to compare"
 if [ "$public" != "$root" ]; then
   private_revision="$(git rev-parse --verify "${2:-HEAD}^{commit}")"
   if [ -n "$(git -C "$root" status --porcelain -- server src migrations)" ] && [ "${2:-HEAD}" = "HEAD" ]; then
@@ -105,16 +124,37 @@ if [ "$public" != "$root" ]; then
       exit 1
     fi
     loud "DEPLOYING THE PUBLIC COMMIT $short, WHICH IS NOT THE PRIVATE REVISION ${private_revision:0:12} (--allow-drift)"
+    compared="server/, src/ and migrations/ of the private revision ${private_revision:0:12} DIFFER from the public commit (--allow-drift)"
+  else
+    compared="server/, src/ and migrations/ of the private revision ${private_revision:0:12} are the public commit's, file for file"
   fi
+fi
+
+# A layer beside the release: private code, sent only when asked for, and never part of the commit.
+if [ -n "$layer" ]; then
+  [ "$public" != "$root" ] || { echo "deploy: --layer is for the private repository. The public one holds no layer." >&2; exit 2; }
+  case "$layer" in
+    server|src|migrations|docs|releases|test|*/*|.*) echo "deploy: a layer is one top-level folder beside the release, not $layer." >&2; exit 2 ;;
+  esac
+  [ -n "$(git -C "$root" ls-tree "$private_revision" -- "$layer/index.ts")" ] || { echo "deploy: there is no $layer/index.ts at the private revision ${private_revision:0:12}." >&2; exit 1; }
+  if [ -n "$(git -C "$root" status --porcelain -- "$layer")" ] && [ "${2:-HEAD}" = "HEAD" ]; then
+    echo "deploy: there are uncommitted changes under $layer/ in $root. Commit them, or name a revision." >&2
+    exit 1
+  fi
+  # What is published stays the service alone: the public commit holds nothing of the layer.
+  [ -z "$(git -C "$public" ls-tree "$commit" -- "$layer")" ] || { echo "deploy: the public commit $short holds a folder named $layer. A layer is private: it is never part of what is published." >&2; exit 1; }
 fi
 
 # A record nobody else can check is worth little: the commit must be on a remote branch.
 if [ -z "$(git -C "$public" branch -r --contains "$commit" 2>/dev/null)" ]; then
-  if [ -z "$unpublished" ]; then
+  if [ -n "$dry" ]; then
+    echo "deploy: (dry run) the public commit $short is on no remote branch; a real deploy stops here without --allow-unpublished." >&2
+  elif [ -z "$unpublished" ]; then
     echo "deploy: the public commit $short is on no remote branch. Push it first (git -C $public push), or use --allow-unpublished." >&2
     exit 1
+  else
+    loud "THE PUBLIC COMMIT $short IS NOT PUSHED: NOBODY ELSE CAN CHECK THIS RELEASE UNTIL IT IS (--allow-unpublished)"
   fi
-  loud "THE PUBLIC COMMIT $short IS NOT PUSHED: NOBODY ELSE CAN CHECK THIS RELEASE UNTIL IT IS (--allow-unpublished)"
 fi
 
 # --- The archive and the record -----------------------------------------------------------------
@@ -122,11 +162,35 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 archive_line="$(node "$here/release.mjs" archive --repo "$public" --commit "$commit" --out "$work/release.tar")"
 read -r _ archive_sha archive_bytes <<< "$archive_line"
+layer_sha="" ; layer_bytes=""
+if [ -n "$layer" ]; then
+  layer_line="$(node "$here/release.mjs" archive --repo "$root" --commit "$private_revision" --layer "$layer" --out "$work/layer.tar")"
+  read -r _ layer_sha layer_bytes <<< "$layer_line"
+fi
 log="${DOEDESK_RELEASE_LOG:-$public/releases/log}"
-mkdir -p "$log"
+[ -n "$dry" ] || mkdir -p "$log"
 record_name="$(node "$here/release.mjs" record --commit "$commit" --sha256 "$archive_sha" --bytes "$archive_bytes" --release "$release" \
-  --log "$log" --out "$work/RELEASE.json" ${DOEDESK_PUBLIC_URL:+--repository "$DOEDESK_PUBLIC_URL"})"
-echo "deploy: release $release, public commit $short, archive sha256 $archive_sha"
+  --log "$log" --out "$work/RELEASE.json" ${DOEDESK_PUBLIC_URL:+--repository "$DOEDESK_PUBLIC_URL"} \
+  ${layer:+--layer-name "$layer" --layer-sha256 "$layer_sha" --layer-bytes "$layer_bytes"})"
+echo "deploy: release $release, public commit $short, archive sha256 $archive_sha${layer:+, with the layer $layer (sha256 $layer_sha)}"
+
+if [ -n "$dry" ]; then
+  # Top-level names only: enough to see what an archive holds and what it does not.
+  holds() { tar -tf "$1" | grep -v '^pax_global_header$' | cut -d/ -f1 | sort -u | tr '\n' ' '; }
+  echo "deploy: DRY RUN. Nothing was signed, logged, committed or sent."
+  echo "  compared   $compared"
+  echo "  release    public commit $commit"
+  echo "             archive sha256 $archive_sha, $archive_bytes bytes, $(tar -tf "$work/release.tar" | grep -vc '/$') files, holding: $(holds "$work/release.tar")"
+  if [ -n "$layer" ]; then
+    echo "  layer      $layer, from the private revision ${private_revision:0:12}"
+    echo "             archive sha256 $layer_sha, $layer_bytes bytes, $(tar -tf "$work/layer.tar" | grep -vc '/$') files, holding: $(holds "$work/layer.tar")"
+  else
+    echo "  layer      none: the machine would run the public commit and nothing else"
+  fi
+  echo "  record     as it would be signed:"
+  sed 's/^/             /' "$work/RELEASE.json"
+  exit 0
+fi
 
 if [ -n "$unsigned" ]; then
   loud "THIS RELEASE IS NOT SIGNED (--unsigned). ITS RECORD IS LOGGED AND SERVED WITHOUT A SIGNATURE. SIGN IT AS SOON AS YOU CAN: docs/releases.md, \"After an unsigned deploy\"."
@@ -171,6 +235,31 @@ UNPACK
 # Sent as base64 so that any login shell on the machine passes it to bash unchanged.
 unpack_b64="$(printf '%s' "$unpack" | base64 | tr -d '\n')"
 gzip -n -c "$work/release.tar" | $ssh_command "$host" "sudo bash -c \"\$(echo $unpack_b64 | base64 -d)\" unpack $release $archive_sha $short"
+if [ -n "$layer" ]; then
+  # The layer goes beside the release it was recorded with, checked the same way, and may put
+  # files only in its own folder: it cannot replace a file of the public commit.
+  unpack_layer="$(cat <<'UNPACK'
+set -euo pipefail
+folder="/opt/doedesk/api/releases/$1"
+received="$(mktemp)"
+gunzip -c > "$received"
+if [ "$(sha256sum "$received" | cut -d' ' -f1)" != "$2" ]; then
+  echo "deploy: the layer that arrived is not the one in the record; the release was removed" >&2
+  rm -rf "$received" "$folder"
+  exit 1
+fi
+if tar -tf "$received" | grep -v -e "^$3/" -e '^pax_global_header$' | grep -q .; then
+  echo "deploy: the layer holds files outside $3/; the release was removed" >&2
+  rm -rf "$received" "$folder"
+  exit 1
+fi
+tar -xf "$received" -C "$folder" --no-same-owner
+rm -f "$received"
+UNPACK
+)"
+  unpack_layer_b64="$(printf '%s' "$unpack_layer" | base64 | tr -d '\n')"
+  gzip -n -c "$work/layer.tar" | $ssh_command "$host" "sudo bash -c \"\$(echo $unpack_layer_b64 | base64 -d)\" unpack $release $layer_sha $layer"
+fi
 $ssh_command "$host" "sudo tee /opt/doedesk/api/releases/$release/RELEASE.json >/dev/null" < "$work/RELEASE.json"
 if [ -f "$work/RELEASE.sigstore.json" ]; then
   $ssh_command "$host" "sudo tee /opt/doedesk/api/releases/$release/RELEASE.sigstore.json >/dev/null" < "$work/RELEASE.sigstore.json"

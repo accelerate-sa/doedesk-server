@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // For going back: writes the whole of a SQLite file as SQL that D1 can load over what it holds.
 //
 //   node server/migration/back-copy.mjs --sqlite <file> --out <private folder>

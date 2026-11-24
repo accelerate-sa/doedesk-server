@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Exercises sign-in against a local `wrangler dev --var EXPOSE_LOGIN_SECRETS:1`.
 // Usage: node test/auth-flow.mjs http://localhost:8931
 const base = process.argv[2] ?? "http://localhost:8931";

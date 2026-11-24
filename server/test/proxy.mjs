@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // The reverse proxy as configured (server/ops/Caddyfile), run for real in front of the server:
 //   - the caller's address reaches the API from Caddy and cannot be stated by the caller;
 //   - the request log holds no sign-in secret, no account identifier, no address, no cookie and

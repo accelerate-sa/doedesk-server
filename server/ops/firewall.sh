@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # The machine's own firewall: everything coming in is dropped except SSH, and, once the service is
 # public, the web ports. Run as root.
 #

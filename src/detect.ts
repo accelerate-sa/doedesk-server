@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
+import { extension } from "./extension.ts";
 import { requireAccepted } from "./acceptance.ts";
 import { authenticate } from "./accounts.ts";
 import { engineDetect, EngineError, type EngineKind } from "./engine.ts";
@@ -25,10 +28,18 @@ export const detect = async (request: Request, env: Env): Promise<Response> => {
     );
   }
   const characters = (texts as ReadonlyArray<string>).reduce((total, text) => total + text.length, 0);
-  const usage = await readUsage(env, account.userId);
-  if (usage.detectCharacters + characters > MONTHLY_DETECT_CHARACTERS) {
+  // An allowance that is not the account's own is answered for by the layer that holds it.
+  const shared = await extension().allowance?.(env, account, "detect");
+  if (shared?.refusal !== undefined) {
     await meterQuietly(env, who, { detect_refused: 1 });
-    throw quotaExceeded();
+    throw shared.refusal;
+  }
+  if (shared === null || shared === undefined) {
+    const usage = await readUsage(env, account.userId);
+    if (usage.detectCharacters + characters > MONTHLY_DETECT_CHARACTERS) {
+      await meterQuietly(env, who, { detect_refused: 1 });
+      throw quotaExceeded();
+    }
   }
 
   // Empty texts are not sent: nothing in them can be personal data. The rest go in one call, and

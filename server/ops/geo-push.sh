@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Fetches this month's country data on this computer and builds the country file on the machine.
 # For a machine that DB-IP's site will not serve (see geo-update.sh). Run from the repository:
 #

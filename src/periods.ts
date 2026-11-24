@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * How long each kind of data is kept. Every figure here is a promise made in the Privacy Policy
  * (`legal/privacy.en.md`, version 1.1) or follows from one, and the nightly job in retention.ts

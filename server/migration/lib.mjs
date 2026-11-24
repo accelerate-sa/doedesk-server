@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Copying the database from Cloudflare D1 to a SQLite file, and proving the copy is exact.
 // Used by the three commands in this folder; each says when it is run.
 //

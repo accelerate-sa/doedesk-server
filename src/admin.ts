@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 import { dashboardPage, MAIL_BADGE } from "./dashboard.ts";
 import { ApiError, type Env, html, json, timingSafeEqual, toHex } from "./http.ts";
 import { mailCounts } from "./mail.ts";
 import { privacyViews } from "./privacy-views.ts";
+import { extension } from "./extension.ts";
 import { usageViews } from "./usage-views.ts";
 
 const COOKIE = "dd_admin";
@@ -80,6 +83,6 @@ export const adminDashboard = async (request: Request, env: Env, url: URL): Prom
       .all<{ received_at: string; raw: string }>();
     return json({ messages: rows.results });
   }
-  const view = (await usageViews(request, env, url)) ?? (await privacyViews(request, env, url)) ?? html(await dashboardPage(env, url));
+  const view = (await usageViews(request, env, url)) ?? (await privacyViews(request, env, url)) ?? (await extension().adminViews?.(request, env, url)) ?? html(await dashboardPage(env, url));
   return withMailBadge(env, view);
 };

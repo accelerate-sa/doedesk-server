@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
+import { extension } from "./extension.ts";
 import { requireAccepted } from "./acceptance.ts";
 import { authenticate } from "./accounts.ts";
 import { engineRead } from "./engine.ts";
@@ -19,10 +22,18 @@ export const ocr = async (request: Request, env: Env): Promise<Response> => {
   const account = await authenticate(request, env);
   await requireAccepted(env, account.userId);
   const who = { userId: account.userId, client: account.client };
-  const usage = await readUsage(env, account.userId);
-  if (usage.ocrPages >= MONTHLY_OCR_PAGES) {
+  // An allowance that is not the account's own is answered for by the layer that holds it.
+  const shared = await extension().allowance?.(env, account, "ocr");
+  if (shared?.refusal !== undefined) {
     await meterQuietly(env, who, { ocr_refused: 1 });
-    throw quotaExceeded();
+    throw shared.refusal;
+  }
+  if (shared === null || shared === undefined) {
+    const usage = await readUsage(env, account.userId);
+    if (usage.ocrPages >= MONTHLY_OCR_PAGES) {
+      await meterQuietly(env, who, { ocr_refused: 1 });
+      throw quotaExceeded();
+    }
   }
   const bytes = await request.arrayBuffer();
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_OCR_BYTES) {

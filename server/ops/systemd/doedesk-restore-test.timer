@@ -1,0 +1,12 @@
+# Sundays 05:30 UTC (08:30 in Riyadh, the first working morning of the week), so a failure is read
+# the same day. If the machine was off at that time the test runs when it comes back.
+[Unit]
+Description=DoeDesk Cloud restore test, weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00 UTC
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The DoeDesk mark: a doe with her eyes struck out. Drawn on a 24-unit grid.
  * The letter takes the text colour; the bar takes `--accent` where a page defines it.

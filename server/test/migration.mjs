@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // The tools that move the database, tried on a local D1 holding awkward data:
 //   - copy-from-d1: export, import, verify; and that it refuses an unsafe folder or an existing file;
 //   - the comparison notices every kind of difference: a changed character, a missing row, a number

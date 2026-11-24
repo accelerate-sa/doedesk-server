@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # The machine side, rehearsed on a Linux container that runs systemd: the same scripts and unit
 # files the real machine gets, over a real SSH connection.
 #
@@ -7,9 +9,9 @@
 # What it does, in the order an operator sets up a machine:
 #   first deploy (install.sh: user, folders, pinned Bun and Litestream with checked checksums,
 #   units) -> settings -> start -> the API answers -> the sandbox holds -> the nightly job, once ->
-#   the country file update's builder -> a snapshot -> the self-check -> a restart under load ->
-#   a second deploy -> the signed release records it served -> rollback -> automatic updates ->
-#   the firewall rules.
+#   a snapshot -> the weekly restore test -> the country file update's builder -> the self-check ->
+#   a restart under load -> a second deploy -> the signed release records it served -> rollback ->
+#   automatic updates -> the firewall rules.
 #
 # It deploys the committed HEAD, as deploy.sh always does. The release records are signed with a
 # key made for the run and kept out of the public transparency log, and are logged in a folder of
@@ -119,6 +121,14 @@ check "nightly: the timer is set for 03:17 UTC" "on 'systemctl list-timers doede
 on 'age-keygen -o /tmp/snapshot.key 2>/dev/null; printf "SNAPSHOT_AGE_RECIPIENT=%s\nSNAPSHOT_KEEP_LOCAL=/var/lib/doedesk/tmp/kept\n" "$(grep -o "age1[0-9a-z]*" /tmp/snapshot.key | head -1)" | sudo tee /etc/doedesk/backup.env >/dev/null; sudo systemctl start doedesk-snapshot.service' >/dev/null 2>&1
 check "snapshot: the unit makes an encrypted snapshot of the running database" "on 'sudo journalctl --namespace doedesk -u doedesk-snapshot -n 10 --no-pager | grep -q \"snapshot doedesk-.*sqlite.gz.age bytes=\" && sudo sh -c \"head -c 21 /var/lib/doedesk/tmp/kept/*.age\" | grep -q age-encryption.org'"
 check "restore: with the private key, on a machine with no sqlite3 command, the snapshot restores and is found sound" "on 'sudo sh -c \"cp /var/lib/doedesk/tmp/kept/*.age /tmp/snap.age\" && sudo /opt/doedesk/api/current/server/ops/restore.sh snapshot /tmp/snap.age /tmp/restored.sqlite --identity /tmp/snapshot.key | grep -q \"sound, .* accounts\"'"
+
+# The weekly restore test. No bucket here: the unit reads the copy on the machine, through the
+# release's own Litestream configuration.
+on 'sudo systemctl start doedesk-litestream; for _ in $(seq 1 30); do sudo find /var/lib/doedesk/replica -type f | grep -q . && break; sleep 1; done; sudo mkdir -p /etc/systemd/system/doedesk-restore-test.service.d && printf "[Service]\nEnvironment=LITESTREAM_CONFIG=/opt/doedesk/api/current/server/ops/litestream.yml\n" | sudo tee /etc/systemd/system/doedesk-restore-test.service.d/rehearsal.conf >/dev/null && sudo systemctl daemon-reload' >/dev/null 2>&1
+check "restore test: the unit restores the continuous copy, finds it sound twice, and leaves no copy behind" "on 'sudo systemctl start doedesk-restore-test.service && [ \"\$(sudo journalctl --namespace doedesk -u doedesk-restore-test --no-pager | grep -c \"restored.sqlite: sound\")\" -ge 2 ] && ! sudo test -e /var/lib/doedesk/tmp/restore-test'"
+on 'sudo install -d -o doedesk -g doedesk -m 700 /var/lib/doedesk/empty-replica && printf "dbs:\n  - path: /var/lib/doedesk/doedesk.sqlite\n    replica:\n      type: file\n      path: /var/lib/doedesk/empty-replica\n" | sudo tee /opt/doedesk/empty-replica.yml >/dev/null && printf "[Service]\nEnvironment=LITESTREAM_CONFIG=/opt/doedesk/empty-replica.yml\n" | sudo tee /etc/systemd/system/doedesk-restore-test.service.d/rehearsal.conf >/dev/null && sudo systemctl daemon-reload' >/dev/null 2>&1
+check "restore test: a copy that cannot be restored fails the unit, starts the alert unit, and leaves no copy behind" "on '! sudo systemctl start doedesk-restore-test.service; sleep 2; sudo journalctl --namespace doedesk -n 60 --no-pager | grep -q \"doedesk-restore-test.service failed\" && ! sudo test -e /var/lib/doedesk/tmp/restore-test'"
+on 'sudo rm -rf /etc/systemd/system/doedesk-restore-test.service.d /opt/doedesk/empty-replica.yml /var/lib/doedesk/empty-replica; sudo systemctl daemon-reload; sudo systemctl stop doedesk-litestream; sudo systemctl reset-failed doedesk-restore-test.service' >/dev/null 2>&1
 
 printf '5.42.224.0,5.42.224.255,AS,SA,Makkah,Jeddah,0,0\n' | on 'cat > /tmp/tiny.csv'
 check "country file: the builder refuses data that is not the whole database, and leaves no file" "on '! sudo -u doedesk /opt/doedesk/runtime/bun /opt/doedesk/api/current/server/geo-build.ts --input /tmp/tiny.csv --output /var/lib/doedesk/geo/country.ddgeo --source tiny && ! sudo test -e /var/lib/doedesk/geo/country.ddgeo'"

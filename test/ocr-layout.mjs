@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Proves what `/v1/ocr` answers a caller that asks where the words are (`?layout=1`), the answer
 // the app needs to send an image with a box over each personal detail:
 //   - nothing changes for a caller that does not ask, and the engine is then not asked either;

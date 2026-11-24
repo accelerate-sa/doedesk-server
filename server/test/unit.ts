@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // What is new in `server/`, tested piece by piece, on whichever runtime runs this file:
 //
 //   bun server/test/unit.ts
@@ -7,18 +9,22 @@
 // request carries, the settings the server refuses to start with, the mail it sends, and the
 // placeholder count the database wrapper relies on. Nothing outside this machine is called.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isReadOnlySql } from "../../src/maintenance.ts";
+import { defaultAccountRegion, EU_REGION_COUNTRIES } from "../../src/regions.ts";
+import { WorkerQueue } from "../../src/worker-queue.ts";
+import { ACCOUNT_REGIONS, isOpenWeightWorkerModel, recordCheckDue, servedWhereRequired, workerSettingProblems, workerUpstream } from "../../src/worker-regions.ts";
 import { resolveCaller } from "../client-address.ts";
 import { ConfigError, readConfig } from "../config.ts";
 import { countPlaceholders } from "../d1.ts";
 import { buildGeo } from "../geo-build.ts";
 import { openGeo, readGeoFile } from "../geo.ts";
 import { formatIp, inRange, parseIp } from "../ip.ts";
+import { loadRuntime } from "../runtime/index.ts";
 import { buildMessage, sendMail, SmtpError } from "../smtp.ts";
 
 let failures = 0;
@@ -156,6 +162,287 @@ try {
   expect("settings: a missing database path, signing key or admin key, and a short key, are each named", problems({ ...good, DOEDESK_DATABASE: "" }).length === 1 && problems({ ...good, JWT_PRIVATE_JWK: "" }).length === 1 && problems({ ...good, ADMIN_KEY: "short" }).length === 1 && problems({ ...good, FORWARD_SECRET: "short" }).length === 1 && problems({ ...good, MAIL_INGEST_KEY: "short" }).length === 1);
   expect("settings: detection and reading need the engine's address, and nothing stands in for it", problems({ ...good, ENGINE_URL: "" }).length === 1 && problems({ ...good, ENGINE_URL: "127.0.0.1:8080" }).length === 1);
   same("settings: the engine's prices are optional, and must be numbers when set", [problems({ ...good, ENGINE_PRICE_PER_1000_UNITS: "1.5", ENGINE_PRICE_PER_1000_PAGES: "0" }).length, problems({ ...good, ENGINE_PRICE_PER_1000_PAGES: "$1" }).length, readConfig({ ...good, ENGINE_PRICE_PER_1000_PAGES: "2" }).vars.ENGINE_PRICE_PER_1000_PAGES], [0, 1, "2"]);
+  same(
+    "settings: each region's worker is optional; its settings reach the handlers, its address must be one, and its prices numbers",
+    [
+      problems(good).length,
+      readConfig(good).vars.WORKER_SA_API_KEY,
+      problems({ ...good, WORKER_EU_URL: "eu.openrouter.ai/api/v1" }),
+      problems({ ...good, WORKER_GLOBAL_STRUCTURED: "xml", WORKER_SA_MIN_OUTPUT_TOKENS: "0", WORKER_EU_PROVIDER: "[1]" }).length,
+      problems({ ...good, WORKER_SA_PARALLEL: "0", WORKER_SA_PER_MINUTE: "many", WORKER_EU_MAX_WAIT_SECONDS: "60" }),
+      problems({ ...good, WORKER_PRICE_PER_1M_INPUT_TOKENS: "cheap" }).length,
+      ((vars) => [vars.WORKER_SA_URL, vars.WORKER_SA_API_KEY, vars.WORKER_EU_MODEL, vars.WORKER_EU_PROVIDER, vars.WORKER_GLOBAL_EXPECTED_PROVIDER, vars.WORKER_PRICE_PER_1M_INPUT_TOKENS, vars.WORKER_PRICE_PER_1M_OUTPUT_TOKENS])(
+        readConfig({ ...good, WORKER_SA_URL: "https://worker.example/v1", WORKER_SA_API_KEY: "k", WORKER_EU_MODEL: "qwen/qwen3.8-27b", WORKER_EU_PROVIDER: "none", WORKER_GLOBAL_EXPECTED_PROVIDER: "Host", WORKER_PRICE_PER_1M_INPUT_TOKENS: "0.3", WORKER_PRICE_PER_1M_OUTPUT_TOKENS: "0.6" }).vars,
+      ),
+    ],
+    [0, undefined, ["WORKER_EU_URL must start with http:// or https://"], 3, ["WORKER_SA_PARALLEL must be a whole number of at least 1", "WORKER_SA_PER_MINUTE must be a whole number of at least 0", "WORKER_EU_MAX_WAIT_SECONDS must be at most 25"], 1, ["https://worker.example/v1", "k", "qwen/qwen3.8-27b", "none", "Host", "0.3", "0.6"]],
+  );
+
+  // --- Regions -----------------------------------------------------------------------------------------
+  same(
+    "region: a new account starts in Saudi Arabia for a Saudi number or a sign-up from there, in the EU for the EU, the EEA, the United Kingdom and Switzerland, and in the global region otherwise",
+    [defaultAccountRegion("phone", null), defaultAccountRegion("phone", "DE"), defaultAccountRegion("email", "SA"), ...["DE", "FR", "NO", "IS", "GB", "CH", "RE"].map((country) => defaultAccountRegion("email", country)), ...["US", "AE", "TR", "CA", "XX", null].map((country) => defaultAccountRegion("email", country))],
+    ["sa", "sa", "sa", ...Array.from({ length: 7 }, () => "eu"), ...Array.from({ length: 6 }, () => "global")],
+  );
+  {
+    // The accounts that existed before regions get theirs from migration 0008, in SQL. Run here on
+    // every country either rule knows, and compared with what a new account would get.
+    const database = (await loadRuntime()).openDatabase(join(folder, "regions.sqlite"));
+    const migrations = join(dirname(dirname(HERE)), "migrations");
+    for (const name of readdirSync(migrations).filter((file) => file.endsWith(".sql")).sort()) {
+      if (name === "0008_account_regions.sql") {
+        const add = "INSERT INTO users (id, email, phone, created_at, country, signup_method) VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z', ?, ?)";
+        let made = 0;
+        for (const country of [...EU_REGION_COUNTRIES, "SA", "US", "AE", "TR", "CA", "JP", "XX", null]) {
+          for (const method of ["email", "phone"] as const) {
+            made += 1;
+            database.query(add, [`account-${made}`, method === "email" ? `${made}@unit.example` : null, method === "phone" ? `+9665${String(made).padStart(8, "0")}` : null, country, method]);
+          }
+        }
+      }
+      database.exec(readFileSync(join(migrations, name), "utf8"));
+    }
+    const rows = database.query("SELECT country, signup_method, region, region_updated_at FROM users", []) as Array<{ country: string | null; signup_method: "email" | "phone"; region: string; region_updated_at: string | null }>;
+    const wrong = rows.filter((row) => row.region !== defaultAccountRegion(row.signup_method, row.country) || row.region_updated_at !== null);
+    expect("region: accounts from before regions are given the region a new account would get from the same facts, and none counts as changed", rows.length > 80 && wrong.length === 0, { rows: rows.length, wrong: wrong.slice(0, 5) });
+    database.close();
+  }
+  same(
+    "region: each region's upstream comes from its own settings and from no other region's, and one without a key has no worker",
+    [
+      ACCOUNT_REGIONS.map((region) => workerUpstream({ WORKER_GLOBAL_API_KEY: "global-key", WORKER_SA_MODEL: "ignored-without-a-key" }, region)?.region ?? null),
+      ((upstream) => [upstream?.url, upstream?.model, upstream?.apiKey, upstream?.provider, upstream?.minOutputTokens, upstream?.structured])(workerUpstream({ WORKER_EU_API_KEY: "eu-key", WORKER_GLOBAL_API_KEY: "global-key", WORKER_SA_API_KEY: "sa-key" }, "global")),
+      ((upstream) => [upstream?.url, upstream?.model, upstream?.provider, upstream?.limits, upstream?.hostedIn])(workerUpstream({ WORKER_SA_API_KEY: "sa-key" }, "sa")),
+      ((upstream) => [upstream?.limits, upstream?.hostedIn])(workerUpstream({ WORKER_SA_API_KEY: "sa-key", WORKER_SA_PARALLEL: "5", WORKER_SA_PER_MINUTE: "280", WORKER_SA_MAX_WAIT_SECONDS: "15", WORKER_SA_HOSTED_IN: "any" }, "sa")),
+      ((upstream) => [upstream?.url, upstream?.model])(workerUpstream({ WORKER_GLOBAL_API_KEY: "global-key" }, "global")),
+    ],
+    [
+      [null, null, "global"],
+      ["https://openrouter.ai/api/v1", "thinkingmachines/inkling-2-mini", "global-key", { data_collection: "deny", zdr: true }, 4000, "jsonSchema"],
+      ["https://alapi.deep.sa/v1", "qwen/qwen3.8-27b", null, { parallel: 1, perMinute: 55, maxWaitMs: 20_000, maxWaiting: 200 }, "saudi"],
+      [{ parallel: 5, perMinute: 280, maxWaitMs: 15_000, maxWaiting: 200 }, null],
+      ["https://openrouter.ai/api/v1", "thinkingmachines/inkling-2-mini"],
+    ],
+  );
+  // --- What each region's worker is, with nothing set but its key: what the evaluation measured ----------
+  {
+    const NO_RETENTION = { data_collection: "deny", zdr: true };
+    const measured = {
+      // deep.sa refuses one strict-schema call in five; asked for a JSON object, none.
+      sa: { url: "https://alapi.deep.sa/v1", model: "qwen/qwen3.8-27b", structured: "jsonObject", reasoningEffort: "none", provider: null, expectedProvider: null, expectedDataRegion: null, hostedIn: "saudi", parallel: 1, perMinute: 55 },
+      global: { url: "https://openrouter.ai/api/v1", model: "thinkingmachines/inkling-2-mini", structured: "jsonSchema", reasoningEffort: "none", provider: NO_RETENTION, expectedProvider: null, expectedDataRegion: null, hostedIn: null, parallel: 16, perMinute: 0 },
+    };
+    for (const region of ["sa", "global"] as const) {
+      const upstream = workerUpstream({ [`WORKER_${region.toUpperCase()}_API_KEY`]: "key" }, region);
+      for (const setting of ["url", "model", "structured", "reasoningEffort", "provider", "expectedProvider", "expectedDataRegion", "hostedIn"] as const) {
+        same(`region ${region}: ${setting} is the one measured`, upstream?.[setting], measured[region][setting]);
+      }
+      same(`region ${region}: the calls it takes at once and in a minute`, [upstream?.limits.parallel, upstream?.limits.perMinute], [measured[region].parallel, measured[region].perMinute]);
+    }
+    // The EU: a hosted worker is not offered there yet. No host serves either measured model where the region requires.
+    same("region eu: a key alone gives it no worker, for it has no address and no model of its own; nor does a key with one of the two", [workerUpstream({ WORKER_EU_API_KEY: "key" }, "eu"), workerUpstream({ WORKER_EU_API_KEY: "key", WORKER_EU_URL: "https://eu.example/v1" }, "eu"), workerUpstream({ WORKER_EU_API_KEY: "key", WORKER_EU_MODEL: "qwen/qwen3.8-27b" }, "eu")], [null, null, null]);
+    same(
+      "region eu: …and the server refuses to start with such a key, naming what is missing",
+      [workerSettingProblems({ WORKER_EU_API_KEY: "key" }).length, /WORKER_EU_URL and WORKER_EU_MODEL/.test(workerSettingProblems({ WORKER_EU_API_KEY: "key" })[0] ?? ""), workerSettingProblems({}), workerSettingProblems({ WORKER_SA_API_KEY: "key", WORKER_GLOBAL_API_KEY: "key" })],
+      [1, true, [], []],
+    );
+    const set = workerUpstream({ WORKER_EU_API_KEY: "key", WORKER_EU_URL: "https://eu.example/v1/", WORKER_EU_MODEL: "Qwen/Qwen3.8-27B", WORKER_EU_STRUCTURED: "jsonSchema", WORKER_EU_REASONING_EFFORT: "low", WORKER_EU_PROVIDER: '{"order":["host-one/eu"],"allow_fallbacks":false}', WORKER_EU_EXPECTED_PROVIDER: "Host One", WORKER_EU_EXPECTED_DATA_REGION: "europe" }, "eu");
+    same("region eu: set by settings alone, with an address and an open-weight model, it has a worker and the checks asked of it", [set?.url, set?.model, set?.structured, set?.reasoningEffort, set?.provider, set?.expectedProvider, set?.expectedDataRegion], ["https://eu.example/v1", "Qwen/Qwen3.8-27B", "jsonSchema", "low", { order: ["host-one/eu"], allow_fallbacks: false }, "Host One", "europe"]);
+    const loose = workerUpstream({ WORKER_GLOBAL_API_KEY: "key", WORKER_GLOBAL_REASONING_EFFORT: "caller", WORKER_GLOBAL_EXPECTED_PROVIDER: "any", WORKER_GLOBAL_EXPECTED_DATA_REGION: "any", WORKER_GLOBAL_STRUCTURED: "nonsense" }, "global");
+    same("region: the caller's reasoning setting can be passed on, a check can be switched off, and a setting that is not one leaves the measured one", [loose?.reasoningEffort, loose?.expectedProvider, loose?.expectedDataRegion, loose?.structured], [null, null, null, "jsonSchema"]);
+
+    // The worker is an open-weight model. A closed one, or one that was not measured, cannot be set.
+    const closed = ["anthropic/claude-haiku-5.5", "google/gemini-3.5-flash-lite", "openai/gpt-6-luna", "mistralai/mistral-small-2603", "qwen/qwen3.8-9b", "thinkingmachines/inkling-2", "doedesk-worker"];
+    const open = ["qwen/qwen3.8-27b", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B-Instruct", "thinkingmachines/inkling-2-mini", "accounts/host/models/inkling-2-mini:free"];
+    same("open weights: Qwen3.8 27B and Inkling 2 mini are workers, however a host writes their names", open.map(isOpenWeightWorkerModel), open.map(() => true));
+    same("open weights: a closed model, or one that was not measured, is not", closed.map(isOpenWeightWorkerModel), closed.map(() => false));
+    same(
+      "open weights: a region set to such a model has no worker, in any region, and the server refuses to start, naming the setting and the two that are allowed",
+      [
+        closed.slice(0, 4).flatMap((model) => ACCOUNT_REGIONS.map((region) => workerUpstream({ [`WORKER_${region.toUpperCase()}_API_KEY`]: "key", [`WORKER_${region.toUpperCase()}_URL`]: "https://host.example/v1", [`WORKER_${region.toUpperCase()}_MODEL`]: model }, region))).every((upstream) => upstream === null),
+        workerSettingProblems({ WORKER_SA_API_KEY: "key", WORKER_SA_MODEL: "anthropic/claude-haiku-5.5" }),
+        workerSettingProblems({ WORKER_GLOBAL_MODEL: "Qwen/Qwen3.8-27B" }),
+      ],
+      [true, ['WORKER_SA_MODEL: "anthropic/claude-haiku-5.5" is not an open-weight model the evaluation measured. A worker is Qwen3.8 27B or Inkling 2 mini'], []],
+    );
+
+    // OpenRouter's own record of a call: read with the region's key, at its own address.
+    const eu = workerUpstream({ WORKER_EU_API_KEY: "eu-key", WORKER_EU_URL: "https://eu.example/api/v1", WORKER_EU_MODEL: "qwen/qwen3.8-27b", WORKER_EU_EXPECTED_PROVIDER: "Host One", WORKER_EU_EXPECTED_DATA_REGION: "europe" }, "eu");
+    const world = workerUpstream({ WORKER_GLOBAL_API_KEY: "key" }, "global");
+    if (eu === null || world === null) throw new Error("no upstream");
+    const realFetch = globalThis.fetch;
+    const asked: Array<[string, string | null]> = [];
+    const answering = (records: ReadonlyArray<unknown>) => {
+      let turn = 0;
+      globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+        asked.push([String(input), new Headers(init?.headers).get("authorization")]);
+        const record = records[Math.min(turn, records.length - 1)];
+        turn += 1;
+        return record === null ? new Response("{}", { status: 404 }) : Response.json({ data: record });
+      }) as typeof fetch;
+    };
+    try {
+      answering([{ provider_name: "Host One", data_region: "europe" }]);
+      const asRequired = await servedWhereRequired(eu, "gen-1 a", [0]);
+      answering([{ provider_name: "Host One", data_region: "us" }]);
+      const otherRegion = await servedWhereRequired(eu, "gen-2", [0]);
+      answering([{ provider_name: "Another Host", data_region: "europe" }]);
+      const otherHost = await servedWhereRequired(eu, "gen-3", [0]);
+      answering([null, { provider_name: "host one", data_region: "Europe" }]);
+      const written = await servedWhereRequired(eu, "gen-4", [0, 0]);
+      answering([null]);
+      const never = await servedWhereRequired(eu, "gen-5", [0, 0]);
+      same("record: Europe and the expected host is as required, another region or another host is not, and a record that never comes is unread", [asRequired, otherRegion, otherHost, written, never], [true, false, false, true, null]);
+      same("record: asked for at the region's own address, by the call's id, with the region's key", asked[0], ["https://eu.example/api/v1/generation?id=gen-1%20a", "Bearer eu-key"]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    same(
+      "record: the first answer's is read and then one a minute, and never where no data region is required",
+      [recordCheckDue(eu, 1_000_000), recordCheckDue(eu, 1_030_000), recordCheckDue(eu, 1_059_999), recordCheckDue(eu, 1_060_000), recordCheckDue(world, 1_000_000)],
+      [true, false, false, true, false],
+    );
+  }
+  // --- The queue in front of a region's upstream --------------------------------------------------------
+  {
+    // A clock the test moves, so that minutes and waits are exact.
+    const makeClock = (start: number) => {
+      let now = start;
+      let nextId = 0;
+      const timers = new Map<number, { at: number; run: () => void }>();
+      return {
+        now: () => now,
+        setTimeout: (run: () => void, ms: number) => {
+          nextId += 1;
+          timers.set(nextId, { at: now + ms, run });
+          return nextId;
+        },
+        clearTimeout: (handle: unknown) => {
+          timers.delete(handle as number);
+        },
+        /** Moves time on, running what falls due in order. */
+        advance: async (ms: number) => {
+          const until = now + ms;
+          for (;;) {
+            const due = [...timers.entries()].filter(([, timer]) => timer.at <= until).sort((left, right) => left[1].at - right[1].at)[0];
+            if (due === undefined) break;
+            now = due[1].at;
+            timers.delete(due[0]);
+            due[1].run();
+            await Promise.resolve();
+          }
+          now = until;
+          await Promise.resolve();
+        },
+      };
+    };
+    const settle = async () => {
+      for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+    };
+    const limits = { parallel: 1, perMinute: 0, maxWaitMs: 20_000, maxWaiting: 200 };
+    /** Enters a request and notes when it is sent, so the order of sending can be read. */
+    const order: Array<string> = [];
+    const releases = new Map<string, () => void>();
+    const outcomes = new Map<string, string>();
+    const enter = (queue: WorkerQueue, account: string, name: string, options: Parameters<WorkerQueue["enter"]>[1] = {}) =>
+      void queue.enter(account, options).then((admission) => {
+        if (admission.admitted) {
+          order.push(name);
+          releases.set(name, admission.release);
+        } else outcomes.set(name, admission.reason === "busy" ? `busy waiting=${admission.waiting} retry=${admission.retryAfterSeconds}` : "gone");
+      });
+    const finish = async (name: string) => {
+      releases.get(name)?.();
+      await settle();
+    };
+
+    // Fairness: one account's folder and two other people's single questions.
+    let clock = makeClock(Date.UTC(2026, 10, 24, 9, 0, 5));
+    let queue = new WorkerQueue({ ...limits }, clock);
+    for (const name of ["a1", "a2", "a3", "a4"]) enter(queue, "a", name);
+    enter(queue, "b", "b1");
+    enter(queue, "c", "c1");
+    await settle();
+    same("queue: with one request at a time, one is sent and the rest wait", [order, queue.state()], [["a1"], { parallel: 1, active: 1, waiting: 5 }]);
+    for (const name of ["a1", "a2", "b1", "c1", "a3"]) await finish(name);
+    same("queue: accounts take turns, so two people's single questions are sent before the rest of a third person's folder", order, ["a1", "a2", "b1", "c1", "a3", "a4"]);
+    await finish("a4");
+    same("queue: when all are answered nothing is in flight or waiting", queue.state(), { parallel: 1, active: 0, waiting: 0 });
+
+    // The limit at once is never exceeded, whatever the number waiting.
+    order.length = 0;
+    queue = new WorkerQueue({ ...limits, parallel: 3 }, clock);
+    let most = 0;
+    for (let index = 0; index < 20; index += 1) enter(queue, `account-${index % 4}`, `r${index}`);
+    await settle();
+    for (let done = 0; done < 20; done += 1) {
+      most = Math.max(most, queue.state().active);
+      await finish(order[done] ?? "");
+    }
+    same("queue: never more in flight than the region takes at once, and every request is sent in the end", [most, order.length, queue.state().active], [3, 20, 0]);
+
+    // The limit a minute counts every request sent, and the rest wait for the next clock minute.
+    order.length = 0;
+    clock = makeClock(Date.UTC(2026, 10, 24, 9, 0, 50));
+    queue = new WorkerQueue({ ...limits, parallel: 10, perMinute: 3 }, clock);
+    for (let index = 0; index < 5; index += 1) enter(queue, "a", `m${index}`);
+    await settle();
+    same("queue: no more are sent in a clock minute than the region allows, though slots are free", [order, queue.state().waiting], [["m0", "m1", "m2"], 2]);
+    await clock.advance(9_000);
+    same("queue: …still none a second before the minute ends", order.length, 3);
+    await clock.advance(1_000);
+    await settle();
+    same("queue: …and the rest are sent when the next minute begins", order, ["m0", "m1", "m2", "m3", "m4"]);
+
+    // The upstream says to wait.
+    order.length = 0;
+    clock = makeClock(Date.UTC(2026, 10, 24, 9, 0, 5));
+    queue = new WorkerQueue({ ...limits }, clock);
+    queue.blockFor(4_000);
+    enter(queue, "a", "w1");
+    await clock.advance(3_900);
+    same("queue: nothing is sent while the upstream said to wait", order, []);
+    await clock.advance(100);
+    await settle();
+    same("queue: …and the next is sent when that time has passed", order, ["w1"]);
+
+    // The wait is bounded.
+    order.length = 0;
+    outcomes.clear();
+    queue = new WorkerQueue({ ...limits, maxWaitMs: 5_000, maxWaiting: 3 }, clock);
+    enter(queue, "a", "long");
+    enter(queue, "b", "waits-1");
+    await clock.advance(1_000);
+    enter(queue, "c", "waits-2");
+    enter(queue, "a", "waits-3");
+    enter(queue, "d", "one-too-many");
+    await settle();
+    same("queue: a request beyond the number that may wait is answered as busy at once", outcomes.get("one-too-many"), "busy waiting=4 retry=5");
+    await clock.advance(4_000);
+    await settle();
+    same("queue: a request not sent within the wait is answered as busy, with how many were waiting, itself included", [outcomes.get("waits-1"), queue.state().waiting, order], ["busy waiting=3 retry=5", 2, ["long"]]);
+    await clock.advance(1_000);
+    await settle();
+    same("queue: …each at its own time", [outcomes.get("waits-2"), outcomes.get("waits-3"), queue.state().waiting], ["busy waiting=2 retry=5", "busy waiting=1 retry=5", 0]);
+
+    // A caller that goes away, and a request sent again after the upstream refused it.
+    order.length = 0;
+    outcomes.clear();
+    queue = new WorkerQueue({ ...limits }, clock);
+    const leaving = new AbortController();
+    enter(queue, "a", "holds");
+    enter(queue, "b", "leaves", { signal: leaving.signal });
+    enter(queue, "c", "stays");
+    enter(queue, "c", "stays-2");
+    await settle();
+    leaving.abort();
+    await settle();
+    enter(queue, "d", "refused-and-back", { front: true });
+    await settle();
+    for (const name of ["holds", "refused-and-back", "stays"]) await finish(name);
+    same("queue: a caller that went away keeps no place, and a request the upstream refused in its turn goes first when it comes back", [outcomes.get("leaves"), order], ["gone", ["holds", "refused-and-back", "stays", "stays-2"]]);
+  }
+
   const leaked = problems({ ...good, ADMIN_KEY: "tiny-secret", JWT_PRIVATE_JWK: '{"kty":"oct","k":"leak-me"}', FORWARD_SECRET: "forward-leak" }).join("\n");
   expect("settings: a refusal names the setting and never repeats its value", leaked.length > 0 && !/tiny-secret|leak-me|forward-leak/.test(leaked), leaked);
 

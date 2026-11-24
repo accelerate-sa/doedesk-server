@@ -1,15 +1,22 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Release records: what was sent to the production machine, signed, and how anyone checks it.
 // docs/releases.md explains the design; this file is the whole of the tooling. Node 22 or newer,
 // git, and (to sign or to check a signature) cosign 2.4 or newer. No other dependency.
 //
-//   node server/ops/release.mjs archive --repo <dir> --commit <rev> --out <file.tar>
+//   node server/ops/release.mjs archive --repo <dir> --commit <rev> --out <file.tar> [--layer <folder>]
 //       Writes the release archive of <rev>: `git archive --format=tar` of RELEASE_PATHS, with the
 //       settings pinned so that any machine makes the same bytes. Prints "<commit> <sha256> <bytes>".
+//       With --layer: the archive of what runs of that one folder instead (its index.ts, src/ and
+//       migrations/), for a layer that runs beside the release and is not part of it
+//       (docs/releases.md, "A layer beside the release").
 //
 //   node server/ops/release.mjs record --commit <sha> --sha256 <hex> --bytes <n> --release <id>
 //       --log <dir> --out <file> [--repository <url>] [--service <name>]
-//       Writes the release record: the JSON object that is signed, logged and served.
+//       [--layer-name <folder> --layer-sha256 <hex> --layer-bytes <n>]
+//       Writes the release record: the JSON object that is signed, logged and served. The three
+//       layer options add `layer`, which says that code beyond the commit runs, and which.
 //
 //   node server/ops/release.mjs sign --record <file> --key <cosign key> [--no-tlog]
 //       Signs the record with cosign; writes <file without .json>.sigstore.json. The signature goes
@@ -74,10 +81,25 @@ export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex"
  * the same settings; the ones that could differ between machines are pinned here. The commit's
  * identifier is inside the tar (a pax header), so an archive names its commit.
  */
+const PINNED = ["-c", "tar.umask=0002", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.attributesFile=/dev/null"];
+
 export const makeArchive = (repo, revision) => {
   const commit = run("git", ["-C", repo, "rev-parse", "--verify", `${revision}^{commit}`]).stdout.toString().trim();
-  const pinned = ["-c", "tar.umask=0002", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.attributesFile=/dev/null"];
-  const bytes = run("git", ["-C", repo, ...pinned, "archive", "--format=tar", commit, "--", ...RELEASE_PATHS]).stdout;
+  const bytes = run("git", ["-C", repo, ...PINNED, "archive", "--format=tar", commit, "--", ...RELEASE_PATHS]).stdout;
+  return { commit, bytes, sha256: sha256(bytes) };
+};
+
+/**
+ * A layer's archive: what runs of one folder (its entry, its code and its migrations; not its
+ * tests or notes). It is made from the files alone, with one fixed time and no commit in it, so
+ * its sha256 changes when the layer's code changes and only then: two releases with the same
+ * layer sha256 run the same layer. Needs git 2.40 or newer, for --mtime.
+ */
+export const makeLayerArchive = (repo, revision, name) => {
+  const commit = run("git", ["-C", repo, "rev-parse", "--verify", `${revision}^{commit}`]).stdout.toString().trim();
+  const paths = [`${name}/index.ts`, `${name}/src`, `${name}/migrations`].filter((path) => run("git", ["-C", repo, "ls-tree", commit, "--", path]).stdout.length > 0);
+  if (!paths.includes(`${name}/index.ts`)) fail(`there is no ${name}/index.ts at ${revision} in ${repo}`);
+  const bytes = run("git", ["-C", repo, ...PINNED, "archive", "--format=tar", "--mtime=2000-01-01T00:00:00Z", `${commit}^{tree}`, "--", ...paths]).stdout;
   return { commit, bytes, sha256: sha256(bytes) };
 };
 
@@ -94,8 +116,15 @@ export const signaturePathOf = (recordPath) => recordPath.replace(/\.json$/, "")
 
 const compactTime = (iso) => iso.replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 
-/** The record. Its fields and their order are fixed; `previous` chains it to the log's last entry. */
-export const makeRecord = ({ commit, archiveSha256, bytes, release, log, repository, service, now = new Date() }) => {
+/** A layer is one top-level folder that the release itself does not hold. */
+const layerName = (name) => (/^[a-z][a-z0-9-]{0,39}$/.test(name) && !RELEASE_PATHS.includes(name) && name !== "releases" ? name : fail(`a layer is one top-level folder beside the release, not "${name}"`));
+
+/**
+ * The record. Its fields and their order are fixed; `previous` chains it to the log's last entry.
+ * `layer` is there only when a layer was sent beside the release: a record without one is the
+ * record of the public commit alone, as it always was.
+ */
+export const makeRecord = ({ commit, archiveSha256, bytes, release, log, repository, service, layer = null, now = new Date() }) => {
   const entries = logEntries(log);
   const last = entries.at(-1);
   const record = {
@@ -110,6 +139,7 @@ export const makeRecord = ({ commit, archiveSha256, bytes, release, log, reposit
       bytes,
       made: `git archive --format=tar ${commit} -- ${RELEASE_PATHS.join(" ")}`,
     },
+    ...(layer === null ? {} : { layer }),
     deployedAt: now.toISOString().replace(/\.\d+Z$/, "Z"),
     previous: last === undefined ? null : { name: last.name, sha256: sha256(readFileSync(last.path)) },
   };
@@ -142,6 +172,12 @@ const checkRecord = ({ text, bundle, repo, key, noTlog, logFolder }) => {
     return { results };
   }
   check(record.schema === SCHEMA, `the record is a ${SCHEMA} record`);
+  // A layer is named, never hidden: its code is not in this repository, so it cannot be checked here.
+  if (record.layer !== undefined) {
+    const named = typeof record.layer?.name === "string" && /^[0-9a-f]{64}$/.test(record.layer?.sha256 ?? "") && Number.isInteger(record.layer?.bytes);
+    check(named, "the layer the record names has a name, a sha256 and a size");
+    if (named) console.log(`info  beside the public commit this release runs a layer that is not in this repository: ${record.layer.name}, sha256 ${record.layer.sha256}, ${record.layer.bytes} bytes`);
+  }
 
   // 1. The signature, over these exact bytes, by the key published in the repository.
   if (bundle === null) check(false, "the record is signed (no signature was found)");
@@ -211,7 +247,8 @@ const logFolder = resolve(given.log ?? join(repo, "releases", "log"));
 switch (command) {
   case "archive": {
     if (given.out === undefined) fail("archive needs --out");
-    const archive = makeArchive(resolve(given.repo ?? "."), given.commit ?? "HEAD");
+    const from = resolve(given.repo ?? ".");
+    const archive = given.layer === undefined ? makeArchive(from, given.commit ?? "HEAD") : makeLayerArchive(from, given.commit ?? "HEAD", layerName(given.layer));
     writeFileSync(given.out, archive.bytes);
     console.log(`${archive.commit} ${archive.sha256} ${archive.bytes.length}`);
     break;
@@ -220,7 +257,11 @@ switch (command) {
     for (const name of ["commit", "sha256", "bytes", "release", "log", "out"]) if (given[name] === undefined) fail(`record needs --${name}`);
     if (!/^[0-9a-f]{40}$/.test(given.commit)) fail("--commit must be a full commit identifier");
     if (!/^[0-9a-f]{64}$/.test(given.sha256)) fail("--sha256 must be 64 hex characters");
+    const layerGiven = ["layer-name", "layer-sha256", "layer-bytes"].filter((name) => given[name] !== undefined);
+    if (layerGiven.length !== 0 && layerGiven.length !== 3) fail("a layer needs --layer-name, --layer-sha256 and --layer-bytes together");
+    if (layerGiven.length === 3 && !/^[0-9a-f]{64}$/.test(given["layer-sha256"])) fail("--layer-sha256 must be 64 hex characters");
     const made = makeRecord({
+      layer: layerGiven.length === 0 ? null : { name: layerName(given["layer-name"]), sha256: given["layer-sha256"], bytes: Number(given["layer-bytes"]) },
       commit: given.commit,
       archiveSha256: given.sha256,
       bytes: Number(given.bytes),

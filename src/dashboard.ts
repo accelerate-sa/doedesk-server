@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
+import { extension } from "./extension.ts";
 import { MARK_SVG } from "./brand.ts";
 import { type Env, escapeHtml } from "./http.ts";
 import { MONTHLY_DETECT_CHARACTERS, monthRows, utcMonth } from "./usage.ts";
@@ -263,7 +266,8 @@ for (const plot of document.querySelectorAll(".plot")) {
   plot.addEventListener("pointerleave", () => { tip.hidden = true; });
 }`;
 
-export type Section = "overview" | "accounts" | "distribution" | "privacy" | "mail";
+/** The dashboard's own views; a layer beside the service names its own (src/extension.ts). */
+export type Section = "overview" | "accounts" | "distribution" | "privacy" | "mail" | (string & {});
 
 /** Where the count of unread mail goes in the page. admin.ts fills it in for every view. */
 export const MAIL_BADGE = "<!--unread-mail-->";
@@ -285,7 +289,7 @@ export const shell = (section: Section, control: string, main: string): string =
 <meta name="robots" content="noindex"><title>DoeDesk dashboard</title><link rel="icon" href="https://doedesk.com/favicon.svg"><style>${STYLE}</style></head>
 <body><div class="page">
 <header><a class="brand" href="/admin">${MARK_SVG}<span>DoeDesk</span></a>
-<nav class="tabs" aria-label="Views">${SECTIONS.map((item) => `<a href="${item.href}"${item.id === section ? ' aria-current="page"' : ""}>${item.label}</a>`).join("")}</nav>${control}<form method="post" action="/admin/sign-out" class="out"><button class="icon-button">Sign out</button></form></header>
+<nav class="tabs" aria-label="Views">${[...SECTIONS, ...(extension().adminSections ?? [])].map((item) => `<a href="${item.href}"${item.id === section ? ' aria-current="page"' : ""}>${item.label}</a>`).join("")}</nav>${control}<form method="post" action="/admin/sign-out" class="out"><button class="icon-button">Sign out</button></form></header>
 ${main}</div><script>${SCRIPT}</script></body></html>`;
 
 export const dashboardPage = async (env: Env, url: URL): Promise<string> => {
@@ -343,10 +347,10 @@ export const dashboardPage = async (env: Env, url: URL): Promise<string> => {
     rows<Count>(db.prepare("SELECT event AS label, COUNT(*) AS count FROM events WHERE day >= ? GROUP BY event ORDER BY count DESC LIMIT 8").bind(since)),
     db
       .prepare(
-        `SELECT COALESCE(SUM(detect_characters), 0) AS characters, COALESCE(SUM(ocr_pages), 0) AS pages FROM (${monthRows("detect_characters, ocr_pages")})`,
+        `SELECT COALESCE(SUM(detect_characters), 0) AS characters, COALESCE(SUM(ocr_pages), 0) AS pages, COALESCE(SUM(worker_input_tokens), 0) AS tokens FROM (${monthRows("detect_characters, ocr_pages, worker_input_tokens")})`,
       )
       .bind(month)
-      .first<{ characters: number; pages: number }>(),
+      .first<{ characters: number; pages: number; tokens: number }>(),
     rows<{ received_at: string; source: string; app_version: string | null; message: string }>(
       db.prepare("SELECT received_at, source, app_version, message FROM crash_reports ORDER BY received_at DESC LIMIT 20"),
     ),
@@ -362,7 +366,7 @@ export const dashboardPage = async (env: Env, url: URL): Promise<string> => {
     `<main class="grid">
 ${tile("Accounts", number(accounts), `+${number(newAccounts)} in ${periodName}`)}
 ${tile("Active installs", number(activeInstalls), `${number(turns)} messages sent`)}
-${tile("Text checked this month", number(usage?.characters ?? 0), `${number(usage?.pages ?? 0)} pages read · ${number(MONTHLY_DETECT_CHARACTERS)} per account`)}
+${tile("Text checked this month", number(usage?.characters ?? 0), `${number(usage?.pages ?? 0)} pages read · ${number(usage?.tokens ?? 0)} worker tokens · ${number(MONTHLY_DETECT_CHARACTERS)} per account`)}
 ${tile("Crash reports", number(crashes), `${number(smsToday)} SMS codes today`)}
 ${dailyChart("New accounts", days, new Map(signupsByDay.map((row) => [row.day, row.count])))}
 ${dailyChart("Active installs by day", days, new Map(activeByDay.map((row) => [row.day, row.count])), activeInstalls)}

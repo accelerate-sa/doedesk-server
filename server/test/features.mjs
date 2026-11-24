@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // What the move adds to the service itself, proved on this machine:
 //   - the freeze used while the database is copied: reads and detection go on, nothing is written,
 //     writes are refused in a way the apps handle (never 401);

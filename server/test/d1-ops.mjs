@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // The database operations the service makes, written once and run against three databases by
 // d1-parity.mjs: a real local D1, and the server's wrapper on Bun and on Node. Each step's answer
 // is reduced to plain data so the three can be compared.
@@ -14,11 +16,11 @@ const attempt = async (work) => {
 };
 
 const USER = "INSERT INTO users (id, email, created_at, country, signup_method) VALUES (?, ?, ?, ?, ?)";
-const COUNTERS = ["detect_requests", "detect_texts", "detect_characters", "detect_records", "detect_entities", "detect_refused", "detect_too_large", "detect_failed", "ocr_files", "ocr_pages", "ocr_bytes", "ocr_pdf_files", "ocr_pdf_pages", "ocr_pdf_bytes", "ocr_refused", "ocr_too_large", "ocr_failed"];
+const COUNTERS = ["detect_requests", "detect_texts", "detect_characters", "detect_records", "detect_entities", "detect_refused", "detect_too_large", "detect_failed", "ocr_files", "ocr_pages", "ocr_bytes", "ocr_pdf_files", "ocr_pdf_pages", "ocr_pdf_bytes", "ocr_refused", "ocr_too_large", "ocr_failed", "worker_requests", "worker_input_tokens", "worker_output_tokens", "worker_refused", "worker_too_large", "worker_failed", "worker_off_region"];
 const ADD = COUNTERS.map((counter) => `${counter} = ${counter} + excluded.${counter}`).join(", ");
 const METER = `INSERT INTO usage_daily (user_id, day, client, ${COUNTERS.join(", ")}) VALUES (?, ?, ?, ${COUNTERS.map(() => "?").join(", ")}) ON CONFLICT (user_id, day, client) DO UPDATE SET ${ADD}`;
 
-/** `db` is `env.DB` or the wrapper. The schema (migrations 0001 to 0005) is already applied. */
+/** `db` is `env.DB` or the wrapper. The schema (every migration) is already applied. */
 export const runOps = async (db) => {
   const out = [];
   const step = async (name, work) => out.push({ name, answer: await attempt(work) });

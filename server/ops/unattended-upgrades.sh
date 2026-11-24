@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Turns on automatic security updates, and a reboot at a fixed quiet hour when one is needed.
 # Ubuntu and Debian (unattended-upgrades) or Oracle Linux and the like (dnf-automatic). Run as root.
 #

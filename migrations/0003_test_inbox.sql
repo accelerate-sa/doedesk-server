@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+-- Copyright (C) 2026 Accelerate Technology Establishment
 -- Mail sent to e2e-…@doedesk.com, kept for a day so a test can read the message it caused.
 CREATE TABLE test_inbox (
   address TEXT NOT NULL,

@@ -1,0 +1,66 @@
+# The weekly restore test (enterprise Step 0): the continuous copy is fetched from the replica
+# bucket, restored into a scratch folder (server/ops/restore.sh), and checked again with the
+# service's own runtime (server/check-database.ts). Either failing starts doedesk-alert@.service.
+# The scratch folder, which holds a whole copy of the database while it runs, is removed
+# afterwards, whether the test passed, failed or was stopped. It never touches the live database.
+# Meant for the standby; enabled by hand only (docs/runbook.md, section 6).
+[Unit]
+Description=DoeDesk Cloud restore test
+After=network-online.target
+Wants=network-online.target
+OnFailure=doedesk-alert@%n.service
+
+[Service]
+Type=oneshot
+User=doedesk
+Group=doedesk
+WorkingDirectory=/opt/doedesk/api/current
+# Which bucket, in which namespace and compartment. No secret.
+EnvironmentFile=/etc/doedesk/backup.env
+Environment=DOEDESK_SNAPSHOT_WORK=/var/lib/doedesk/tmp/restore-test
+Environment=DOEDESK_RUNTIME=/opt/doedesk/runtime/bun
+Environment=BUN_INSTALL_CACHE_DIR=/var/lib/doedesk/tmp
+ExecStartPre=/bin/rm -rf /var/lib/doedesk/tmp/restore-test
+ExecStartPre=/bin/mkdir -m 0700 /var/lib/doedesk/tmp/restore-test
+ExecStart=/opt/doedesk/api/current/server/ops/restore.sh replica /var/lib/doedesk/tmp/restore-test/restored.sqlite
+ExecStart=/opt/doedesk/runtime/bun /opt/doedesk/api/current/server/check-database.ts /var/lib/doedesk/tmp/restore-test/restored.sqlite
+ExecStopPost=/bin/rm -rf /var/lib/doedesk/tmp/restore-test
+TimeoutStartSec=30min
+LogNamespace=doedesk
+SyslogIdentifier=doedesk-restore-test
+
+# --- What it may touch ------------------------------------------------------------------------
+# The whole system is read-only to it, except its data folder.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doedesk
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+UMask=0077
+
+# --- What it may do ---------------------------------------------------------------------------
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @debug
+# Litestream gives the files it writes the owner of the database, as in doedesk-litestream.service.
+# With no capability it can only give them to its own user.
+SystemCallFilter=@chown
+# Not set: MemoryDenyWriteExecute. The JavaScript engine compiles code as it runs and needs it.
+MemoryMax=1G

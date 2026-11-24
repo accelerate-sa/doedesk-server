@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Proves usage metering end to end on this machine:
 //   - detection and reading write the right daily rows, and the monthly totals follow;
 //   - the allowance refuses at the right point, counting old monthly totals and daily rows together;
@@ -12,12 +14,17 @@
 import { client, ENGINE_TOKEN, engineUnits, sha256Hex, startLocalService } from "./local-service.mjs";
 import { COUNTERS, dayOf, monthOf, sampleData, sampleSql } from "./usage-sample.mjs";
 
-// The engine's prices the service is given in its settings, for the dashboard's estimate (src/cost.ts).
-const PRICES = { ENGINE_PRICE_PER_1000_UNITS: "1.0", ENGINE_PRICE_PER_1000_PAGES: "1.5" };
+// The engine's and the worker's prices the service is given in its settings, for the dashboard's estimate (src/cost.ts).
+const PRICES = { ENGINE_PRICE_PER_1000_UNITS: "1.0", ENGINE_PRICE_PER_1000_PAGES: "1.5", WORKER_PRICE_PER_1M_INPUT_TOKENS: "0.4", WORKER_PRICE_PER_1M_OUTPUT_TOKENS: "0.9" };
 const USD_PER_UNIT = 1.0 / 1000;
 const USD_PER_PAGE = 1.5 / 1000;
+const USD_PER_TOKEN_IN = 0.4 / 1_000_000;
+const USD_PER_TOKEN_OUT = 0.9 / 1_000_000;
 const CHARACTER_ALLOWANCE = 3_000_000;
 const PAGE_ALLOWANCE = 200;
+const TOKEN_ALLOWANCE = 10_000_000;
+// The worker's own requests are proved in worker-chat.mjs; here its counters ride along in the
+// sample data, through the roll-up and into the owner's views.
 
 let failures = 0;
 const expect = (label, condition, detail = null) => {
@@ -85,7 +92,7 @@ data.daily.push(
   // Days old enough to be rolled up, in one month, and one day that is not.
   { user_id: rolled.id, day: `${oldMonth}-10`, client: "desktop", ...zero, detect_requests: 3, detect_texts: 9, detect_characters: 7000, detect_records: 12, detect_entities: 40, detect_failed: 1 },
   { user_id: rolled.id, day: `${oldMonth}-10`, client: "mobile", ...zero, ocr_files: 2, ocr_pages: 11, ocr_bytes: 900_000, ocr_pdf_files: 1, ocr_pdf_pages: 10, ocr_pdf_bytes: 800_000 },
-  { user_id: rolled.id, day: `${oldMonth}-11`, client: "desktop", ...zero, detect_requests: 1, detect_texts: 2, detect_characters: 300, detect_records: 2, ocr_refused: 4 },
+  { user_id: rolled.id, day: `${oldMonth}-11`, client: "desktop", ...zero, detect_requests: 1, detect_texts: 2, detect_characters: 300, detect_records: 2, ocr_refused: 4, worker_requests: 6, worker_input_tokens: 81_000, worker_output_tokens: 2_400, worker_refused: 1, worker_too_large: 2, worker_failed: 3, worker_off_region: 1 },
   { user_id: rolled.id, day: dayOf(399), client: "desktop", ...zero, detect_requests: 1, detect_texts: 1, detect_characters: 50, detect_records: 1 },
 );
 data.monthly.push(
@@ -234,9 +241,11 @@ try {
     ocrPages: expected.ocr_pages,
     detectRequests: expected.detect_requests + mobileRow.detect_requests,
     ocrFiles: expected.ocr_files,
+    workerInputTokens: 0,
+    workerRequests: 0,
   });
   const resets = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1, 1)).toISOString();
-  same("…and the allowance, with when it starts over", me.json?.allowance, { detectCharacters: CHARACTER_ALLOWANCE, ocrPages: PAGE_ALLOWANCE, resetsAt: resets });
+  same("…and the allowance, with when it starts over", me.json?.allowance, { detectCharacters: CHARACTER_ALLOWANCE, ocrPages: PAGE_ALLOWANCE, workerInputTokens: TOKEN_ALLOWANCE, resetsAt: resets });
   expect("…with no price in it", !/usd|cost|price|\$/i.test(me.text), me.text);
 
   // --- A real sign-in carries its client into the meter -------------------------------------------
@@ -327,7 +336,9 @@ try {
       ]),
     );
   const now = monthTotals(thisMonth);
-  const costOf = (total) => total.detect_records * USD_PER_UNIT + total.ocr_pages * USD_PER_PAGE;
+  const costOf = (total) => total.detect_records * USD_PER_UNIT + total.ocr_pages * USD_PER_PAGE + total.worker_input_tokens * USD_PER_TOKEN_IN + total.worker_output_tokens * USD_PER_TOKEN_OUT;
+  const requestsOf = (total) => total.detect_requests + total.ocr_files + total.worker_requests;
+  expect("the sample holds accounts that used the worker this month", [...now.values()].filter((total) => total.worker_input_tokens > 0).length >= 5);
   const since30 = dayOf(29);
   const activeDays = (id) => new Set(allDaily.filter((row) => row.user_id === id && row.day >= since30).map((row) => row.day)).size;
 
@@ -354,13 +365,13 @@ try {
   const csv = await call("GET", "/admin/accounts.csv", { headers: admin });
   expect("accounts CSV: served as a download, never cached", csv.status === 200 && csv.headers.get("content-type").startsWith("text/csv") && csv.headers.get("content-disposition") === `attachment; filename="doedesk-accounts-${thisMonth}.csv"` && csv.headers.get("cache-control") === "no-store", [...csv.headers]);
   const [header, ...lines] = parseCsv(csv.text);
-  same("accounts CSV: columns", header, ["account_id", "email", "phone", "field", "field_other", "workplace", "country", "sign_in", "joined_utc", "last_active_day_utc", "month_utc", "characters", "engine_units", "pages", "requests", "allowance_share", "estimated_engine_cost_usd", "active_days_last_30"]);
+  same("accounts CSV: columns", header, ["account_id", "email", "phone", "field", "field_other", "workplace", "country", "sign_in", "joined_utc", "last_active_day_utc", "month_utc", "characters", "engine_units", "pages", "worker_input_tokens", "worker_output_tokens", "requests", "allowance_share", "estimated_cost_usd", "active_days_last_30"]);
   same("accounts CSV: one line per account", lines.length, users.length);
   const byId = new Map(lines.map((line) => [line[0], Object.fromEntries(header.map((name, index) => [name, line[index]]))]));
   const wrongLines = users.filter((person) => {
     const line = byId.get(person.id);
     const total = now.get(person.id);
-    const share = Math.max(total.detect_characters / CHARACTER_ALLOWANCE, total.ocr_pages / PAGE_ALLOWANCE);
+    const share = Math.max(total.detect_characters / CHARACTER_ALLOWANCE, total.ocr_pages / PAGE_ALLOWANCE, total.worker_input_tokens / TOKEN_ALLOWANCE);
     return !(
       line !== undefined &&
       line.email.replace(/^'/, "") === (person.email ?? "") &&
@@ -374,9 +385,11 @@ try {
       Number(line.characters) === total.detect_characters &&
       Number(line.engine_units) === total.detect_records &&
       Number(line.pages) === total.ocr_pages &&
-      Number(line.requests) === total.detect_requests + total.ocr_files &&
+      Number(line.worker_input_tokens) === total.worker_input_tokens &&
+      Number(line.worker_output_tokens) === total.worker_output_tokens &&
+      Number(line.requests) === requestsOf(total) &&
       Math.abs(Number(line.allowance_share) - share) < 0.0001 &&
-      Math.abs(Number(line.estimated_engine_cost_usd) - costOf(total)) < 0.0001 &&
+      Math.abs(Number(line.estimated_cost_usd) - costOf(total)) < 0.0001 &&
       Number(line.active_days_last_30) === activeDays(person.id)
     );
   });
@@ -427,6 +440,8 @@ try {
   same("accounts page: the second page holds the rest", rowIds(second50.text), ranked((person) => now.get(person.id).detect_characters).slice(50, 100));
   const byPages = await post({ s: "characters", d: "desc", sort: "pages" });
   same("accounts page: sorting by pages", rowIds(byPages.text), ranked((person) => now.get(person.id).ocr_pages).slice(0, 50));
+  const byTokens = await post({ s: "characters", d: "desc", sort: "tokens" });
+  same("accounts page: sorting by worker tokens", rowIds(byTokens.text), ranked((person) => now.get(person.id).worker_input_tokens).slice(0, 50));
   const byCost = await post({ s: "pages", d: "desc", sort: "cost" });
   // Costs are fractions, so equal ones may fall either way round: check the order, not the exact list.
   const costs = rowIds(byCost.text).map((id) => costOf(now.get(id)));
@@ -457,16 +472,29 @@ try {
   const total = now.get(metered.id);
   expect("account page: renders with the account's name", page.status === 200 && page.text.includes(`<bdi>${metered.email}</bdi>`), page.status);
   expect("account page: the title does not name the account", /<title>DoeDesk dashboard<\/title>/.test(page.text) && !page.text.split("</head>")[0].includes(metered.email));
-  expect("account page: this month's characters, pages and requests", page.text.includes(`<div class="figure">${number(total.detect_characters)}</div>`) && page.text.includes(`<div class="figure">${number(total.ocr_pages)}</div>`) && page.text.includes(`<div class="figure">${number(total.detect_requests + total.ocr_files)}</div>`));
+  expect("account page: this month's characters, pages and requests", page.text.includes(`<div class="figure">${number(total.detect_characters)}</div>`) && page.text.includes(`<div class="figure">${number(total.ocr_pages)}</div>`) && page.text.includes(`<div class="figure">${number(requestsOf(total))}</div>`));
   expect("account page: estimated cost from engine units and pages", page.text.includes(`<div class="figure">$${costOf(total).toFixed(2)}</div>`), costOf(total));
   expect("account page: 90 days of characters, pages and requests, each with its table", (page.text.match(/class="card chart third"/g) ?? []).length === 3 && (page.text.match(/<summary>Table<\/summary>/g) ?? []).length === 3);
   expect("account page: today's characters are on the chart", page.text.includes(`: ${number(total.detect_characters)}"`));
   expect("account page: both clients", page.text.includes(">Desktop<") && page.text.includes(">Phone<"));
   expect(
     "account page: refusals and failures",
-    page.text.includes(`<tr><th scope="row">Text</th><td class="num">0</td><td class="num">1</td><td class="num">1</td></tr>`) &&
-      page.text.includes(`<tr><th scope="row">Files</th><td class="num">0</td><td class="num">1</td><td class="num">2</td></tr>`),
+    page.text.includes(`<tr><th scope="row">Text</th><td class="num">0</td><td class="num">1</td><td class="num">1</td><td></td></tr>`) &&
+      page.text.includes(`<tr><th scope="row">Files</th><td class="num">0</td><td class="num">1</td><td class="num">2</td><td></td></tr>`) &&
+      page.text.includes(`<tr><th scope="row">Worker</th><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>`),
   );
+  // An account from the sample that used the worker: its month's tokens, against the allowance.
+  const workerUser = [...now].filter(([, item]) => item.worker_input_tokens > 0).sort((left, right) => right[1].worker_input_tokens - left[1].worker_input_tokens)[0];
+  const workerPage = await call("GET", `/admin/accounts/${workerUser[0]}`, { headers: admin });
+  expect(
+    "account page: the worker's tokens this month, the share of the allowance, and what it answered with",
+    workerPage.text.includes(`<h2>Worker tokens</h2><div class="figure">${number(workerUser[1].worker_input_tokens)}</div>`) &&
+      workerPage.text.includes(`${Math.round((workerUser[1].worker_input_tokens / TOKEN_ALLOWANCE) * 100)}% of ${number(TOKEN_ALLOWANCE)} · ${number(workerUser[1].worker_output_tokens)} answered`) &&
+      workerPage.text.includes(`<div class="figure">$${costOf(workerUser[1]).toFixed(2)}</div>`),
+    workerPage.text.split("Worker tokens</h2>")[1]?.slice(0, 300),
+  );
+  const rolledPage = await call("GET", `/admin/accounts/${rolled.id}`, { headers: admin });
+  expect("account page: a month's row carries the worker's tokens and what it answered with", rolledPage.text.includes(`<td class="num">${number(81_000)}</td><td class="num wide-only">${number(2_400)}</td>`), rolledPage.text.split("By month")[1]?.slice(0, 900));
   const refusedPage = await call("GET", `/admin/accounts/${nearText.id}`, { headers: admin });
   expect("account page: allowance refusals show for the account that met them", refusedPage.text.includes(`<tr><th scope="row">Text</th><td class="num">2</td>`));
   const veteranPage = await call("GET", `/admin/accounts/${data.users[0].id}`, { headers: admin });
@@ -479,12 +507,12 @@ try {
   const percentile = (values, share) => values[Math.min(values.length - 1, Math.max(0, Math.ceil(share * values.length) - 1))] ?? 0;
   for (const [name, month] of [["this month", thisMonth], ["last month", monthOf(lastMonthDay)]]) {
     const totals = [...monthTotals(month).values()];
-    const active = totals.filter((item) => item.detect_characters > 0 || item.ocr_pages > 0 || item.detect_requests + item.ocr_files > 0);
+    const active = totals.filter((item) => item.detect_characters > 0 || item.ocr_pages > 0 || item.detect_requests + item.ocr_files + item.worker_requests > 0);
     const sorted = (measure) => active.map(measure).sort((left, right) => left - right);
     const spread = await call("GET", `/admin/distribution?month=${month}`, { headers: admin });
     const cells = (label) => new RegExp(`<tr><th scope="row">${label}</th>(.*?)</tr>`).exec(spread.text)?.[1] ?? "";
     const want = (share) =>
-      [(item) => item.detect_characters, (item) => item.ocr_pages, (item) => item.detect_requests + item.ocr_files]
+      [(item) => item.detect_characters, (item) => item.ocr_pages, (item) => item.detect_requests + item.ocr_files + item.worker_requests, (item) => item.worker_input_tokens]
         .map((measure) => {
           const value = percentile(sorted(measure), share);
           return `<td class="num"><span title="${number(value)}">${compact(value)}</span></td>`;
@@ -492,7 +520,7 @@ try {
         .join("");
     expect(`spread, ${name}: renders, with how many accounts are active`, spread.status === 200 && spread.text.includes(`<div class="figure">${number(active.length)}</div><div class="delta">of ${number(users.length)}</div>`), spread.status);
     for (const [label, share] of [["Median", 0.5], ["75th percentile", 0.75], ["90th", 0.9], ["99th", 0.99], ["Highest", 1]]) {
-      expect(`spread, ${name}: ${label} of characters, pages and requests`, cells(label).startsWith(want(share)), { got: cells(label), want: want(share) });
+      expect(`spread, ${name}: ${label} of characters, pages, requests and worker tokens`, cells(label).startsWith(want(share)), { got: cells(label), want: want(share) });
     }
     const cost = active.reduce((sum, item) => sum + costOf(item), 0);
     expect(`spread, ${name}: average estimated cost per active account`, spread.text.includes(`<h2>Cost per active account</h2><div class="figure">$${(cost / active.length).toFixed(2)}</div>`), cost / active.length);
@@ -508,7 +536,7 @@ try {
       { none, middle },
     );
     const legal = users.filter((person) => person.field === "legal").map((person) => monthTotals(month).get(person.id));
-    const legalActive = legal.filter((item) => item.detect_characters > 0 || item.ocr_pages > 0 || item.detect_requests + item.ocr_files > 0);
+    const legalActive = legal.filter((item) => item.detect_characters > 0 || item.ocr_pages > 0 || item.detect_requests + item.ocr_files + item.worker_requests > 0);
     expect(`spread, ${name}: by field, accounts and active accounts`, spread.text.includes(`<td>Legal</td><td class="num wide-only">${legal.length}</td><td class="num">${legalActive.length}</td>`), { all: legal.length, active: legalActive.length });
   }
   const badMonth = await call("GET", "/admin/distribution?month=2026-13", { headers: admin });

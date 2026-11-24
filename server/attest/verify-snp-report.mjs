@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Checks an AMD SEV-SNP attestation report the way the DoeDesk Mac app would, with nothing but
 // Node's own crypto. Written for the confidential-VM spike; it is the reference for the app's
 // check, not a library.

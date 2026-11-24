@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Looks at the service from outside, as the apps reach it. Run it from any other machine: by hand,
 # from cron, or from a monitoring service that can run a script. Exit 0 when all is well.
 #

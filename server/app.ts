@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The service on a machine of its own: the same handlers as the Cloudflare Worker (`src/index.ts`),
  * given by this file what Cloudflare gave them.
@@ -12,7 +14,8 @@
  *   env.ASSETS, the site               not here: the site stays on Cloudflare
  *
  * Nothing in a request or an answer is changed apart from that. One route exists here only:
- * GET /v1/release, the signed record of the release this process runs (docs/releases.md).
+ * GET /v1/release, the signed record of the release this process runs (docs/releases.md), and
+ * GET /v1/source, where this service's source is.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,6 +23,7 @@ import { join } from "node:path";
 import worker from "../src/index.ts";
 import { engineHealth } from "../src/engine.ts";
 import type { Env } from "../src/http.ts";
+import { ACCOUNT_REGIONS, workerUpstream } from "../src/worker-regions.ts";
 import { FORWARD_HEADERS } from "../src/maintenance.ts";
 import { resolveCaller } from "./client-address.ts";
 import type { ServerConfig } from "./config.ts";
@@ -61,6 +65,41 @@ const releaseFile = (folder: string, which: keyof typeof RELEASE_FILES): Respons
     status: 200,
     headers: { "content-type": "application/json", "cache-control": "no-store", "access-control-allow-origin": "*" },
   });
+};
+
+/**
+ * GET /v1/source: where the source of this service is, for anyone who uses it over the network,
+ * as section 13 of its licence provides. The commit is the release record's, when there is one.
+ * A release that carries a layer beside it says so: the layer is not part of this source.
+ */
+interface ReleaseRecordFacts {
+  readonly commit?: unknown;
+  readonly layer?: { readonly name?: unknown; readonly sha256?: unknown };
+}
+
+const sourceOffer = (config: Pick<ServerConfig, "releaseDir" | "sourceUrl">): Response => {
+  const read = (): ReleaseRecordFacts | null => {
+    try {
+      return JSON.parse(readFileSync(join(config.releaseDir, RELEASE_FILES.record), "utf8")) as ReleaseRecordFacts;
+    } catch {
+      return null;
+    }
+  };
+  const record = read();
+  const layer = record?.layer;
+  return jsonResponse(
+    {
+      license: "AGPL-3.0-or-later",
+      source: config.sourceUrl,
+      commit: typeof record?.commit === "string" ? record.commit : null,
+      release: "/v1/release",
+      ...(typeof layer?.name === "string" && typeof layer.sha256 === "string"
+        ? { layer: { name: layer.name, sha256: layer.sha256, note: "A layer runs beside this release. It is not part of this source and is under its own terms." } }
+        : {}),
+    },
+    200,
+    { "access-control-allow-origin": "*", "cache-control": "no-store" },
+  );
 };
 
 /** What `env.EMAIL.send` takes on Cloudflare: the fields auth.ts passes. */
@@ -131,6 +170,8 @@ export const createApp = (dependencies: AppDependencies): App => {
         engine: "local",
         engineReady: engineState.ready,
         engineState: engineState.detail,
+        // Whether each region's worker has a key. None is asked: a question to one would be a paid request.
+        worker: Object.fromEntries(ACCOUNT_REGIONS.map((region) => [region, workerUpstream(env, region) === null ? "not configured" : "configured"])),
         mail: config.smtp === null ? "not configured" : "smtp",
         frozen: config.vars.MAINTENANCE === "freeze",
       },
@@ -189,6 +230,7 @@ export const createApp = (dependencies: AppDependencies): App => {
 
     if (request.method === "GET" && url.pathname === "/v1/release") return releaseFile(config.releaseDir, "record");
     if (request.method === "GET" && url.pathname === "/v1/release/signature") return releaseFile(config.releaseDir, "signature");
+    if (request.method === "GET" && url.pathname === "/v1/source") return sourceOffer(config);
 
     const place = caller.stated ?? geo.lookup(caller.ip);
     const headers = new Headers(request.headers);

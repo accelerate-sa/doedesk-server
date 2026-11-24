@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+-- Copyright (C) 2026 Accelerate Technology Establishment
 -- Metering per account, per day and per client, in enough detail to price the service later.
 -- Counts only: nothing sent for detection or reading is stored, here or anywhere.
 -- Days and months are UTC.

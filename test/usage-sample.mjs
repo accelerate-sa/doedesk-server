@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Sample accounts and their usage, for the tests and for screenshots of the dashboard.
 // Every person, firm and address here is invented. The same seed always gives the same data, so a
 // test can work out what the dashboard should show from the data it put in.
@@ -21,6 +23,13 @@ export const COUNTERS = [
   "ocr_refused",
   "ocr_too_large",
   "ocr_failed",
+  "worker_requests",
+  "worker_input_tokens",
+  "worker_output_tokens",
+  "worker_refused",
+  "worker_too_large",
+  "worker_failed",
+  "worker_off_region",
 ];
 
 const DAY = 86_400_000;
@@ -117,6 +126,9 @@ export const sampleData = ({ accounts = 64, now = Date.now(), seed = 7 } = {}) =
       });
     }
     if (profile.share[1] === 0) continue;
+    // About a third of the accounts use the worker. Decided by the account's place in the list and
+    // not by chance, so that the rest of the sample is what it was before the worker was added.
+    const usesWorker = index % 3 === 1;
 
     // Days of use since joining, heavier accounts on more of them. Each month's days share out that
     // month's portion of the allowance, so no month goes over it.
@@ -164,6 +176,14 @@ export const sampleData = ({ accounts = 64, now = Date.now(), seed = 7 } = {}) =
           ocr_refused: 0,
           ocr_too_large: next() < 0.02 ? 1 : 0,
           ocr_failed: files > 0 && next() < 0.05 ? 1 : 0,
+          // Sealed documents are long: more tokens go in than characters are checked, few come back.
+          worker_requests: usesWorker ? Math.max(1, Math.round(texts / 5)) : 0,
+          worker_input_tokens: usesWorker ? Math.round(dayCharacters * 1.6) : 0,
+          worker_output_tokens: usesWorker ? Math.round(dayCharacters / 25) : 0,
+          worker_refused: 0,
+          worker_too_large: usesWorker && texts % 41 === 0 ? 1 : 0,
+          worker_failed: usesWorker && texts % 23 === 0 ? 1 : 0,
+          worker_off_region: usesWorker && texts % 97 === 0 ? 1 : 0,
         };
         if (dayCharacters > 0 || dayPages > 0) daily.push(row);
       });

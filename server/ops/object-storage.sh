@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Sourced by the backup scripts. Gives them `store`, which talks to Oracle Object Storage as this
 # machine itself (an instance principal), through rclone at its pinned version. No key, no user.
 #

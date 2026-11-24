@@ -31,6 +31,8 @@ anyone checks it, and what it does and does not prove.
 - `previous` is the sha256 of the record before it in the log. Taking a record out of the log, or
   changing one, breaks the link of the next.
 - Nothing in a record is secret, and nothing in it names a person.
+- A record may also hold `layer`: see [A layer beside the release](#a-layer-beside-the-release).
+  A record without it is the record of the commit alone.
 
 ## Where records are
 
@@ -39,6 +41,7 @@ anyone checks it, and what it does and does not prove.
 | [`releases/log/`](../releases/log) in this repository | Every record, `NNNNN-<time>-<commit>.json`, with its signature beside it as `….sigstore.json` |
 | `GET https://api.doedesk.com/v1/release` | The record of the release the API is running now, byte for byte as signed |
 | `GET https://api.doedesk.com/v1/release/signature` | Its signature (a Sigstore bundle), or 404 `not_signed` |
+| `GET https://api.doedesk.com/v1/source` | Where the source of the running service is: the licence (`AGPL-3.0-or-later`), this repository, and the commit from the record. It also says when a layer runs beside the release |
 | The Sigstore public transparency log (Rekor) | An entry for every signature, timestamped by Sigstore, which DoeDesk cannot remove or backdate |
 | [`releases/cosign.pub`](../releases/cosign.pub) | The public key the records are signed with |
 
@@ -87,6 +90,33 @@ node -p 'require("./record.json").archive.sha256'      # the same
 Then read the code at that commit. Where text and files are handled, and what is stored, is in the
 [README](../README.md#what-it-stores-and-what-it-never-stores).
 
+## A layer beside the release
+
+The service in this repository is complete: accounts, detection, reading and the worker's relay,
+with everything it stores. It also has one place where more code can attach
+([`src/extension.ts`](../src/extension.ts)), and DoeDesk Cloud may run a layer there that is not
+in this repository: the administration of organizations that take the service under an agreement
+(their members, seats and settings). Its licence is not this repository's.
+
+What the layer can and cannot do is fixed by that interface, which is here to read. It is never
+handed what an account sends for detection, for reading or to the worker: those requests are
+handled by this repository's code and by nothing else.
+
+A release that carries a layer says so. Its record holds:
+
+```json
+"layer": { "name": "enterprise", "sha256": "…64 hex characters…", "bytes": 194560 }
+```
+
+- `sha256` and `bytes` are of the archive of the layer that was sent beside the release. The
+  machine checks them before it unpacks anything, and unpacks the layer only into its own folder:
+  a layer cannot replace a file of the public commit. The archive is made from the layer's files
+  alone, so the sha256 changes when the layer's code changes and only then.
+- The layer's code is not published, so you cannot make that archive again. What you can check is
+  that the commit and its archive are exactly as for any release, that a layer is running, and
+  whether it is the same one as in the release before. `verify` prints the line.
+- A record without `layer` is a release of the public commit and nothing else.
+
 ## What this proves, and what it does not
 
 It proves that the operator of DoeDesk Cloud **stated**, under a key only the operator holds and
@@ -117,7 +147,8 @@ When attestation is in place, the measured code will be checked against these sa
 4. It adds the record and its signature to `releases/log/` and commits them (it does not push:
    push after the deploy).
 5. It sends the archive; the machine checks the sha256 before unpacking it, and keeps the record
-   and the signature beside the release, where the API reads them on each request.
+   and the signature beside the release, where the API reads them on each request. With
+   `--layer`, the layer's archive is sent after it and checked the same way.
 
 ### The signing key
 
@@ -172,6 +203,12 @@ git diff                                              # read it: nothing private
 git commit -am "…" && git push
 ```
 
-`deploy.sh` stops when `server/`, `src/` or `migrations/` differ, so a release is never made from
-code that was not published. Dependencies and `package.json` are kept by hand: this one has no
-scripts for the website.
+`deploy.sh` stops when `server/`, `src/` or `migrations/` differ, so the service is never released
+from code that was not published. Dependencies and `package.json` are kept by hand: this one has
+no scripts for the website.
+
+A layer is the one exception, and it is outside those three folders: `deploy.sh --layer <folder>`
+sends that folder of the private revision beside the release and names it in the record
+([A layer beside the release](#a-layer-beside-the-release)). Without `--layer` nothing of the
+private repository is sent, whatever it holds. `deploy.sh --dry-run` shows what a deploy would
+compare, send and record, and sends nothing.

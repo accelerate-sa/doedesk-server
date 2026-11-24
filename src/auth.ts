@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 import { acceptanceForSignIn, parseAcceptance, recordAcceptance, settleSignInAcceptance } from "./acceptance.ts";
 import {
   type Account,
@@ -13,6 +15,7 @@ import {
 import { legalSummary } from "./legal.ts";
 import { confirmPage, signInEmail } from "./pages.ts";
 import { CONSENT_REGION_CODES, SIGN_UP_UNAVAILABLE_MESSAGE, signUpBlock, usageDataRule } from "./regions.ts";
+import { describeAccount, extension } from "./extension.ts";
 import {
   API_ORIGIN,
   ApiError,
@@ -77,10 +80,13 @@ const signUpRefusal = (row: LoginRequestRow): ApiError | null => {
 };
 
 /** The answer to a completed sign-in: the session, the account, and where its acceptance stands. */
-const signedIn = async (env: Env, row: LoginRequestRow, account: Account, created: boolean) => {
-  const acceptance = await settleSignInAcceptance(env, account.userId, row);
-  const token = await createSession(env, account.userId, sessionClient(row.client), row.device, true, signInPurpose(row.purpose));
-  return { token, account: publicAccount(account), created, acceptance, legal: legalSummary(env) };
+const signedIn = async (env: Env, row: LoginRequestRow, found: Account, created: boolean) => {
+  const acceptance = await settleSignInAcceptance(env, found.userId, row);
+  const token = await createSession(env, found.userId, sessionClient(row.client), row.device, true, signInPurpose(row.purpose));
+  // A layer beside the service may know this account (src/extension.ts) and give it back changed.
+  const account = (await extension().signedIn?.(env, found)) ?? found;
+  const about = await describeAccount(env, account);
+  return { token, account: publicAccount(account), worker: about.worker, created, acceptance, legal: legalSummary(env), ...about.beside };
 };
 
 const ARABIC_INDIC_ZERO = 0x660;

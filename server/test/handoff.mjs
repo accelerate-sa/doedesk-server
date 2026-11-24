@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // The days in which both homes exist: the Worker in front, the server behind it.
 //   - forwarding: every API request to the Worker is answered by the server, with the caller's
 //     country as Cloudflare reports it; the Worker's own database is not touched;

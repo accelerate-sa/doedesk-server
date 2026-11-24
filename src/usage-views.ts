@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * The owner's views of usage per account: the accounts table, one account, how usage spreads across
  * accounts, and the CSV exports. All of it sits behind the admin key (see admin.ts).
@@ -26,6 +28,7 @@ import {
   type Counter,
   MONTHLY_DETECT_CHARACTERS,
   MONTHLY_OCR_PAGES,
+  MONTHLY_WORKER_INPUT_TOKENS,
   monthRows,
   previousMonth,
   utcMonth,
@@ -70,8 +73,8 @@ const dateLabel = (iso: string): string =>
   iso.slice(0, 4) === utcMonth().slice(0, 4) ? dayLabel(iso.slice(0, 10)) : `${dayLabel(iso.slice(0, 10))} ${iso.slice(0, 4)}`;
 const fieldLabel = (field: string | null, other: string | null): string =>
   field === null ? "" : field === "other" && other !== null ? other : (FIELD_LABELS[field] ?? field);
-const allowanceShare = (characters: number, pages: number): number =>
-  Math.max(characters / MONTHLY_DETECT_CHARACTERS, pages / MONTHLY_OCR_PAGES);
+const allowanceShare = (characters: number, pages: number, tokens: number): number =>
+  Math.max(characters / MONTHLY_DETECT_CHARACTERS, pages / MONTHLY_OCR_PAGES, tokens / MONTHLY_WORKER_INPUT_TOKENS);
 const meterBar = (share: number): string =>
   `<span class="meter"><i style="inline-size:${Math.min(100, share * 100).toFixed(1)}%"></i></span>`;
 
@@ -120,6 +123,9 @@ interface AccountRow {
   readonly characters: number;
   readonly units: number;
   readonly pages: number;
+  /** Tokens sent to the worker, and tokens it answered with. */
+  readonly tokens: number;
+  readonly out_tokens: number;
   readonly requests: number;
   readonly allowance: number;
   readonly cost: number;
@@ -146,9 +152,10 @@ const COLUMNS: ReadonlyArray<Column> = [
   { id: "active", label: "Last active", order: "last_active", first: "desc" },
   { id: "characters", label: "Characters", order: "characters", first: "desc", numeric: true },
   { id: "pages", label: "Pages", order: "pages", first: "desc", numeric: true },
+  { id: "tokens", label: "Worker tokens", order: "tokens", first: "desc", numeric: true, title: "Tokens sent to the worker, as its answers counted them" },
   { id: "requests", label: "Requests", order: "requests", first: "desc", numeric: true },
-  { id: "allowance", label: "Allowance", order: "allowance", first: "desc", numeric: true, title: "Share of the monthly allowance used, by characters or pages, whichever is higher" },
-  { id: "cost", label: "Est. cost", order: "cost", first: "desc", numeric: true, title: "What the engine costs for this account's use, estimated from the prices in the settings" },
+  { id: "allowance", label: "Allowance", order: "allowance", first: "desc", numeric: true, title: "Share of the monthly allowance used, by characters, pages or worker tokens, whichever is highest" },
+  { id: "cost", label: "Est. cost", order: "cost", first: "desc", numeric: true, title: "What the engine and the worker cost for this account's use, estimated from the prices in the settings" },
   { id: "days", label: "Days active", order: "active_days", first: "desc", numeric: true, title: "Days with a request, of the last 30" },
 ];
 const DEFAULT_SORT = "characters";
@@ -197,6 +204,10 @@ const phonePattern = (term: string): string => {
 const matches = (first: number): string =>
   `(?${first} = '' OR users.email LIKE ?${first} ESCAPE '\\' OR users.phone LIKE ?${first + 1} ESCAPE '\\' OR users.id = ?${first + 2})`;
 
+/** The columns of both usage tables that the tables of accounts add up, month by month. */
+const MONTH_COLUMNS =
+  "user_id, detect_characters, detect_records, ocr_pages, detect_requests, ocr_files, worker_requests, worker_input_tokens, worker_output_tokens";
+
 const accountRows = async (
   env: Env,
   month: string,
@@ -209,8 +220,9 @@ const accountRows = async (
     env.DB.prepare(
       `WITH month AS (
          SELECT user_id, SUM(detect_characters) AS characters, SUM(detect_records) AS units,
-                SUM(ocr_pages) AS pages, SUM(detect_requests + ocr_files) AS requests
-         FROM (${monthRows("user_id, detect_characters, detect_records, ocr_pages, detect_requests, ocr_files")})
+                SUM(ocr_pages) AS pages, SUM(worker_input_tokens) AS tokens, SUM(worker_output_tokens) AS out_tokens,
+                SUM(detect_requests + ocr_files + worker_requests) AS requests
+         FROM (${monthRows(MONTH_COLUMNS)})
          GROUP BY user_id
        ), days AS (
          SELECT user_id, MAX(day) AS last_day, COUNT(DISTINCT CASE WHEN day >= ?2 THEN day END) AS active_days
@@ -223,22 +235,25 @@ const accountRows = async (
               users.created_at AS joined,
               MAX(COALESCE(seen.last_used, ''), COALESCE(days.last_day, ''), users.created_at) AS last_active,
               COALESCE(month.characters, 0) AS characters, COALESCE(month.units, 0) AS units,
-              COALESCE(month.pages, 0) AS pages, COALESCE(month.requests, 0) AS requests,
-              MAX(COALESCE(month.characters, 0) * 1.0 / ${MONTHLY_DETECT_CHARACTERS}, COALESCE(month.pages, 0) * 1.0 / ${MONTHLY_OCR_PAGES}) AS allowance,
-              COALESCE(month.units, 0) * ?3 + COALESCE(month.pages, 0) * ?4 AS cost,
+              COALESCE(month.pages, 0) AS pages, COALESCE(month.tokens, 0) AS tokens, COALESCE(month.out_tokens, 0) AS out_tokens,
+              COALESCE(month.requests, 0) AS requests,
+              MAX(COALESCE(month.characters, 0) * 1.0 / ${MONTHLY_DETECT_CHARACTERS}, COALESCE(month.pages, 0) * 1.0 / ${MONTHLY_OCR_PAGES}, COALESCE(month.tokens, 0) * 1.0 / ${MONTHLY_WORKER_INPUT_TOKENS}) AS allowance,
+              COALESCE(month.units, 0) * ?3 + COALESCE(month.pages, 0) * ?4 + COALESCE(month.tokens, 0) * ?5 + COALESCE(month.out_tokens, 0) * ?6 AS cost,
               COALESCE(days.active_days, 0) AS active_days
        FROM users
        LEFT JOIN month ON month.user_id = users.id
        LEFT JOIN days ON days.user_id = users.id
        LEFT JOIN seen ON seen.user_id = users.id
-       WHERE ${matches(5)}
+       WHERE ${matches(7)}
        ORDER BY ${state.sort.order} ${state.direction === "asc" ? "ASC" : "DESC"}, users.id
-       LIMIT ?8 OFFSET ?9`,
+       LIMIT ?10 OFFSET ?11`,
     ).bind(
       month,
       dayOf(29),
       costs?.perUnit ?? 0,
       costs?.perPage ?? 0,
+      costs?.perInputToken ?? 0,
+      costs?.perOutputToken ?? 0,
       state.search === "" ? "" : likePattern(state.search),
       phonePattern(state.search),
       state.search,
@@ -267,9 +282,11 @@ const accountsCsv = async (env: Env, state: TableState): Promise<Response> => {
       "characters",
       "engine_units",
       "pages",
+      "worker_input_tokens",
+      "worker_output_tokens",
       "requests",
       "allowance_share",
-      ...(costs === null ? [] : ["estimated_engine_cost_usd"]),
+      ...(costs === null ? [] : ["estimated_cost_usd"]),
       "active_days_last_30",
     ],
     ...list.map((row) => [
@@ -287,6 +304,8 @@ const accountsCsv = async (env: Env, state: TableState): Promise<Response> => {
       row.characters,
       row.units,
       row.pages,
+      row.tokens,
+      row.out_tokens,
       row.requests,
       Number(row.allowance.toFixed(4)),
       ...(costs === null ? [] : [Number(row.cost.toFixed(4))]),
@@ -334,11 +353,12 @@ const accountsPage = async (env: Env, state: TableState): Promise<string> => {
 <td>${dateLabel(row.last_active)}</td>
 ${figure(row.characters, number(row.characters))}
 ${figure(row.pages, number(row.pages))}
+${figure(row.tokens, number(row.tokens))}
 ${figure(row.requests, number(row.requests))}
-<td class="num allow${share === 0 ? " zero" : ""}" title="${number(row.characters)} of ${number(MONTHLY_DETECT_CHARACTERS)} characters, ${number(row.pages)} of ${number(MONTHLY_OCR_PAGES)} pages">${meterBar(share)}${percent(share)}</td>
+<td class="num allow${share === 0 ? " zero" : ""}" title="${number(row.characters)} of ${number(MONTHLY_DETECT_CHARACTERS)} characters, ${number(row.pages)} of ${number(MONTHLY_OCR_PAGES)} pages, ${number(row.tokens)} of ${number(MONTHLY_WORKER_INPUT_TOKENS)} worker tokens">${meterBar(share)}${percent(share)}</td>
 ${costs === null ? "" : figure(row.cost, usd(row.cost))}
 ${figure(row.active_days, number(row.active_days))}
-<td class="line">${number(row.characters)} characters · ${number(row.pages)} pages · ${costs === null ? "" : `${usd(row.cost)} · `}${dateLabel(row.last_active)}</td>
+<td class="line">${number(row.characters)} characters · ${number(row.pages)} pages · ${row.tokens === 0 ? "" : `${number(row.tokens)} worker tokens · `}${costs === null ? "" : `${usd(row.cost)} · `}${dateLabel(row.last_active)}</td>
 </tr>`;
     })
     .join("");
@@ -356,7 +376,7 @@ ${figure(row.active_days, number(row.active_days))}
 <div class="bar"><h1>Accounts<span class="count">${state.search === "" ? number(everyone) : `${number(total)} of ${number(everyone)}`}</span></h1>
 <label class="search">${icon("search")}<input type="search" name="q" value="${escapeHtml(state.search)}" placeholder="Email or phone" aria-label="Search accounts by email or phone" autocomplete="off" spellcheck="false"></label>
 <button class="icon-button" formaction="/admin/accounts.csv" title="Download as CSV" aria-label="Download as CSV">${icon("download")}<span>CSV</span></button></div>
-<div class="sorts" role="group" aria-label="Sort"><span>${shortMonth(month)}</span>${["characters", "pages", "cost", "allowance", "active", "joined", "account"]
+<div class="sorts" role="group" aria-label="Sort"><span>${shortMonth(month)}</span>${["characters", "pages", "tokens", "cost", "allowance", "active", "joined", "account"]
       .flatMap((id) => columns.filter((item) => item.id === id))
       .map((column) => {
         return `<button name="sort" value="${column.id}"${column === state.sort ? ' aria-pressed="true"' : ""}>${column.label}${column === state.sort ? icon(state.direction === "asc" ? "up" : "down") : ""}</button>`;
@@ -366,7 +386,7 @@ ${
   list.length === 0
     ? `<div class="sheet"><p class="empty none">No account matches</p></div>`
     : `<div class="sheet"><table class="accounts">
-<thead><tr class="groups"><td colspan="6"></td><th colspan="${costs === null ? 4 : 5}" scope="colgroup">${monthLabel(month)}</th><th scope="colgroup" class="num">30 days</th></tr>
+<thead><tr class="groups"><td colspan="6"></td><th colspan="${costs === null ? 5 : 6}" scope="colgroup">${monthLabel(month)}</th><th scope="colgroup" class="num">30 days</th></tr>
 <tr>${columns.map(heading).join("")}</tr></thead>
 <tbody>${body}</tbody></table></div>`
 }
@@ -424,7 +444,7 @@ const accountPage = async (env: Env, id: string): Promise<string | null> => {
     rows<{ day: string; characters: number; pages: number; requests: number }>(
       db
         .prepare(
-          "SELECT day, SUM(detect_characters) AS characters, SUM(ocr_pages) AS pages, SUM(detect_requests + ocr_files) AS requests " +
+          "SELECT day, SUM(detect_characters) AS characters, SUM(ocr_pages) AS pages, SUM(detect_requests + ocr_files + worker_requests) AS requests " +
             "FROM usage_daily WHERE user_id = ? AND day >= ? GROUP BY day",
         )
         .bind(id, since),
@@ -447,7 +467,9 @@ const accountPage = async (env: Env, id: string): Promise<string | null> => {
     db.prepare("SELECT MAX(day) AS day FROM usage_daily WHERE user_id = ?").bind(id).first<{ day: string | null }>(),
   ]);
 
-  const costOf = (row: Totals, prices: UnitCosts): number => estimatedCostUsd({ units: row.detect_records, pages: row.ocr_pages }, prices);
+  const costOf = (row: Totals, prices: UnitCosts): number =>
+    estimatedCostUsd({ units: row.detect_records, pages: row.ocr_pages, inputTokens: row.worker_input_tokens, outputTokens: row.worker_output_tokens }, prices);
+  const requestsOf = (row: Totals): number => row.detect_requests + row.ocr_files + row.worker_requests;
   const zero = Object.fromEntries(COUNTERS.map((counter) => [counter, 0])) as Totals;
   const now = months.find((row) => row.month === month) ?? { month, ...zero };
   const recent = clients.reduce<Totals>(
@@ -461,9 +483,9 @@ const accountPage = async (env: Env, id: string): Promise<string | null> => {
     `<section class="card tile"><h2>${title}</h2><div class="figure">${figure}</div><div class="delta">${share === undefined ? "" : meterBar(share)}${delta}</div></section>`;
   const fact = (name: string, value: string): string => (value === "" ? "" : `<div><dt>${name}</dt><dd>${value}</dd></div>`);
   const monthRow = (row: { month: string } & Totals): string =>
-    `<tr><td class="nowrap">${shortMonth(row.month)}</td><td class="num">${number(row.detect_characters)}</td><td class="num wide-only">${number(row.detect_records)}</td><td class="num">${number(row.ocr_pages)}</td><td class="num wide-only">${number(row.ocr_files)}</td><td class="num">${number(row.detect_requests + row.ocr_files)}</td><td class="num wide-only">${number(row.detect_refused + row.ocr_refused + row.detect_too_large + row.ocr_too_large)}</td><td class="num wide-only">${number(row.detect_failed + row.ocr_failed)}</td>${costs === null ? "" : `<td class="num">${usd(costOf(row, costs))}</td>`}</tr>`;
+    `<tr><td class="nowrap">${shortMonth(row.month)}</td><td class="num">${number(row.detect_characters)}</td><td class="num wide-only">${number(row.detect_records)}</td><td class="num">${number(row.ocr_pages)}</td><td class="num wide-only">${number(row.ocr_files)}</td><td class="num">${number(row.worker_input_tokens)}</td><td class="num wide-only">${number(row.worker_output_tokens)}</td><td class="num">${number(requestsOf(row))}</td><td class="num wide-only">${number(row.detect_refused + row.ocr_refused + row.worker_refused + row.detect_too_large + row.ocr_too_large + row.worker_too_large)}</td><td class="num wide-only">${number(row.detect_failed + row.ocr_failed + row.worker_failed)}</td>${costs === null ? "" : `<td class="num">${usd(costOf(row, costs))}</td>`}</tr>`;
   const clientCounts: ReadonlyArray<Count> = clients
-    .map((row) => ({ label: row.client, count: row.detect_requests + row.ocr_files }))
+    .map((row) => ({ label: row.client, count: requestsOf(row) }))
     .toSorted((left, right) => right.count - left.count);
 
   return shell(
@@ -478,8 +500,9 @@ const accountPage = async (env: Env, id: string): Promise<string | null> => {
 <h3 class="scope">${monthLabel(month)}</h3>
 ${tile("Characters", number(now.detect_characters), `${percent(now.detect_characters / MONTHLY_DETECT_CHARACTERS)} of ${number(MONTHLY_DETECT_CHARACTERS)}`, now.detect_characters / MONTHLY_DETECT_CHARACTERS)}
 ${tile("Pages", number(now.ocr_pages), `${percent(now.ocr_pages / MONTHLY_OCR_PAGES)} of ${number(MONTHLY_OCR_PAGES)}`, now.ocr_pages / MONTHLY_OCR_PAGES)}
-${tile("Requests", number(now.detect_requests + now.ocr_files), `${number(now.detect_requests)} text · ${number(now.ocr_files)} files`)}
-${costs === null ? "" : tile("Est. engine cost", usd(costOf(now, costs)), `${number(now.detect_records)} engine units · ${number(now.ocr_pages)} pages`)}
+${tile("Worker tokens", number(now.worker_input_tokens), `${percent(now.worker_input_tokens / MONTHLY_WORKER_INPUT_TOKENS)} of ${number(MONTHLY_WORKER_INPUT_TOKENS)} · ${number(now.worker_output_tokens)} answered`, now.worker_input_tokens / MONTHLY_WORKER_INPUT_TOKENS)}
+${tile("Requests", number(requestsOf(now)), `${number(now.detect_requests)} text · ${number(now.ocr_files)} files · ${number(now.worker_requests)} worker`)}
+${costs === null ? "" : tile("Est. cost", usd(costOf(now, costs)), `${number(now.detect_records)} engine units · ${number(now.ocr_pages)} pages · ${number(now.worker_input_tokens + now.worker_output_tokens)} worker tokens`)}
 <h3 class="scope">Last 90 days</h3>
 ${dailyChart("Characters", days, series("characters")).replace('class="card chart"', 'class="card chart third"')}
 ${dailyChart("Pages", days, series("pages")).replace('class="card chart"', 'class="card chart third"')}
@@ -497,9 +520,10 @@ ${breakdown("Clients", clientCounts, CLIENT_LABELS)
           )
           .join("")}</tbody></table></details></section>`,
   )}
-<section class="card wide"><h2>Refused and failed</h2><table><thead><tr><td></td><th class="num">Allowance used up</th><th class="num">Too large</th><th class="num">Engine failed</th></tr></thead><tbody>
-<tr><th scope="row">Text</th><td class="num">${number(recent.detect_refused)}</td><td class="num">${number(recent.detect_too_large)}</td><td class="num">${number(recent.detect_failed)}</td></tr>
-<tr><th scope="row">Files</th><td class="num">${number(recent.ocr_refused)}</td><td class="num">${number(recent.ocr_too_large)}</td><td class="num">${number(recent.ocr_failed)}</td></tr>
+<section class="card wide"><h2>Refused and failed</h2><table><thead><tr><td></td><th class="num">Allowance used up</th><th class="num">Too large</th><th class="num">Failed</th><th class="num" title="Answers the worker gave from a region other than the expected one">Off region</th></tr></thead><tbody>
+<tr><th scope="row">Text</th><td class="num">${number(recent.detect_refused)}</td><td class="num">${number(recent.detect_too_large)}</td><td class="num">${number(recent.detect_failed)}</td><td></td></tr>
+<tr><th scope="row">Files</th><td class="num">${number(recent.ocr_refused)}</td><td class="num">${number(recent.ocr_too_large)}</td><td class="num">${number(recent.ocr_failed)}</td><td></td></tr>
+<tr><th scope="row">Worker</th><td class="num">${number(recent.worker_refused)}</td><td class="num">${number(recent.worker_too_large)}</td><td class="num">${number(recent.worker_failed)}</td><td class="num">${number(recent.worker_off_region)}</td></tr>
 </tbody></table></section>
 <h3 class="scope">Terms and rights</h3>
 ${privacyCard}
@@ -507,7 +531,7 @@ ${privacyCard}
 <section class="card full">${
       months.length === 0
         ? `<p class="empty">None yet</p>`
-        : `<div class="scroll tall"><table><thead><tr><th>Month</th><th class="num">Characters</th><th class="num wide-only">Engine units</th><th class="num">Pages</th><th class="num wide-only">Files</th><th class="num">Requests</th><th class="num wide-only">Refused</th><th class="num wide-only">Failed</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>${months.map(monthRow).join("")}</tbody></table></div>`
+        : `<div class="scroll tall"><table><thead><tr><th>Month</th><th class="num">Characters</th><th class="num wide-only">Engine units</th><th class="num">Pages</th><th class="num wide-only">Files</th><th class="num">Worker tokens</th><th class="num wide-only">Answered</th><th class="num">Requests</th><th class="num wide-only">Refused</th><th class="num wide-only">Failed</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>${months.map(monthRow).join("")}</tbody></table></div>`
     }</section>
 </div></main>`,
   );
@@ -544,30 +568,35 @@ const distributionPage = async (env: Env, url: URL): Promise<string> => {
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(requested) ? requested : thisMonth;
   const costs = unitCosts(env);
   const [accounts] = await Promise.all([
-    rows<{ field: string | null; characters: number; units: number; pages: number; requests: number }>(
+    rows<{ field: string | null; characters: number; units: number; pages: number; tokens: number; outputTokens: number; requests: number }>(
       env.DB.prepare(
         `SELECT users.field AS field, COALESCE(m.characters, 0) AS characters, COALESCE(m.units, 0) AS units,
-                COALESCE(m.pages, 0) AS pages, COALESCE(m.requests, 0) AS requests
+                COALESCE(m.pages, 0) AS pages, COALESCE(m.tokens, 0) AS tokens, COALESCE(m.out_tokens, 0) AS outputTokens,
+                COALESCE(m.requests, 0) AS requests
          FROM users LEFT JOIN (
            SELECT user_id, SUM(detect_characters) AS characters, SUM(detect_records) AS units,
-                  SUM(ocr_pages) AS pages, SUM(detect_requests + ocr_files) AS requests
-           FROM (${monthRows("user_id, detect_characters, detect_records, ocr_pages, detect_requests, ocr_files")})
+                  SUM(ocr_pages) AS pages, SUM(worker_input_tokens) AS tokens, SUM(worker_output_tokens) AS out_tokens,
+                  SUM(detect_requests + ocr_files + worker_requests) AS requests
+           FROM (${monthRows(MONTH_COLUMNS)})
            GROUP BY user_id
          ) m ON m.user_id = users.id`,
       ).bind(month),
     ),
   ]);
-  const everyone = accounts.map((account) => ({ ...account, cost: costs === null ? 0 : estimatedCostUsd(account, costs) }));
+  const everyone = accounts.map((account) => ({
+    ...account,
+    cost: costs === null ? 0 : estimatedCostUsd({ units: account.units, pages: account.pages, inputTokens: account.tokens, outputTokens: account.outputTokens }, costs),
+  }));
   const active = everyone.filter((account) => account.characters > 0 || account.pages > 0 || account.requests > 0);
-  type Measure = "characters" | "pages" | "requests" | "cost";
+  type Measure = "characters" | "pages" | "requests" | "tokens" | "cost";
   const sorted = (list: typeof everyone, measure: Measure): Array<number> =>
     list.map((account) => account[measure]).sort((left, right) => left - right);
-  const sum = (list: typeof everyone, measure: Measure | "units"): number =>
+  const sum = (list: typeof everyone, measure: Measure | "units" | "outputTokens"): number =>
     list.reduce((total, account) => total + account[measure], 0);
   const show = (measure: Measure, value: number): string =>
     measure === "cost" ? usd(value) : `<span title="${number(value)}">${compact(value)}</span>`;
 
-  const MEASURES: ReadonlyArray<Measure> = costs === null ? ["characters", "pages", "requests"] : ["characters", "pages", "requests", "cost"];
+  const MEASURES: ReadonlyArray<Measure> = costs === null ? ["characters", "pages", "requests", "tokens"] : ["characters", "pages", "requests", "tokens", "cost"];
   const values = Object.fromEntries(MEASURES.map((measure) => [measure, sorted(active, measure)])) as Record<Measure, Array<number>>;
   const spread = (label: string, share: number): string =>
     `<tr><th scope="row">${label}</th>${MEASURES.map((measure) => `<td class="num">${show(measure, percentile(values[measure], share))}</td>`).join("")}</tr>`;
@@ -594,8 +623,8 @@ const distributionPage = async (env: Env, url: URL): Promise<string> => {
       return { field, all, used };
     })
     .toSorted((left, right) => right.used.length - left.used.length || right.all.length - left.all.length);
-  const atAllowance = active.filter((account) => allowanceShare(account.characters, account.pages) >= 1).length;
-  const pastHalf = active.filter((account) => allowanceShare(account.characters, account.pages) >= 0.5).length;
+  const atAllowance = active.filter((account) => allowanceShare(account.characters, account.pages, account.tokens) >= 1).length;
+  const pastHalf = active.filter((account) => allowanceShare(account.characters, account.pages, account.tokens) >= 0.5).length;
   const totalCost = sum(active, "cost");
   const costValues = values.cost ?? [];
 
@@ -610,11 +639,11 @@ ${tile("Active accounts", number(active.length), `of ${number(everyone.length)}`
 ${
   costs === null
     ? ""
-    : `${tile("Est. engine cost", usd(totalCost), `${number(sum(active, "units"))} engine units · ${number(sum(active, "pages"))} pages`)}
+    : `${tile("Est. cost", usd(totalCost), `${number(sum(active, "units"))} engine units · ${number(sum(active, "pages"))} pages · ${number(sum(active, "tokens") + sum(active, "outputTokens"))} worker tokens`)}
 ${tile("Cost per active account", usd(active.length === 0 ? 0 : totalCost / active.length), `median ${usd(percentile(costValues, 0.5))} · highest ${usd(percentile(costValues, 1))}`)}`
 }
 ${tile("At the allowance", number(atAllowance), `${number(pastHalf)} past half of it`)}
-<section class="card wide"><h2>Per active account</h2><table><thead><tr><td></td><th class="num">Characters</th><th class="num">Pages</th><th class="num">Requests</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>
+<section class="card wide"><h2>Per active account</h2><table><thead><tr><td></td><th class="num">Characters</th><th class="num">Pages</th><th class="num">Requests</th><th class="num">Worker tokens</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>
 ${spread("Median", 0.5)}${spread("75th percentile", 0.75)}${spread("90th", 0.9)}${spread("99th", 0.99)}${spread("Highest", 1)}
 </tbody></table></section>
 <section class="card wide"><h2>Share from the heaviest accounts</h2><table><thead><tr><td></td><th class="num">Characters</th><th class="num">Pages</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>
@@ -622,7 +651,7 @@ ${top("Top 1", 1)}${top("Top 5", 5)}${top("Top 10", 10)}${top(`Top tenth (${numb
 </tbody></table></section>
 ${breakdown("Accounts by characters", bands("characters", CHARACTER_BANDS)).replace('class="card"', 'class="card wide"')}
 ${breakdown("Accounts by pages", bands("pages", PAGE_BANDS)).replace('class="card"', 'class="card wide"')}
-<section class="card full"><h2>By field</h2><div class="fit"><table><thead><tr><th>Field</th><th class="num wide-only">Accounts</th><th class="num">Active</th><th class="num" title="Median across the field's active accounts">Median characters</th><th class="num wide-only">90th</th><th class="num" title="Median across the field's active accounts">Median pages</th><th class="num wide-only">90th</th>${costs === null ? "" : '<th class="num" title="Average estimated engine cost per active account">Average cost</th>'}</tr></thead><tbody>${fields
+<section class="card full"><h2>By field</h2><div class="fit"><table><thead><tr><th>Field</th><th class="num wide-only">Accounts</th><th class="num">Active</th><th class="num" title="Median across the field's active accounts">Median characters</th><th class="num wide-only">90th</th><th class="num" title="Median across the field's active accounts">Median pages</th><th class="num wide-only">90th</th>${costs === null ? "" : '<th class="num" title="Average estimated cost per active account">Average cost</th>'}</tr></thead><tbody>${fields
       .map(({ field, all, used }) => {
         const characters = sorted(used, "characters");
         const pages = sorted(used, "pages");

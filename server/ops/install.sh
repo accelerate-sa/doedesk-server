@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Prepares a machine to run the DoeDesk Cloud API. Run as root, from an unpacked release:
 #
 #   sudo server/ops/install.sh
@@ -99,7 +101,7 @@ install -o root -g root -m 0644 "$here"/systemd/*.service "$here"/systemd/*.time
 install -o root -g root -m 0644 "$here/systemd/journald@doedesk.conf" /etc/systemd/journald@doedesk.conf
 # A data folder elsewhere: the units may write the real folder, not only the link to it.
 if [ "$data" != "/var/lib/doedesk" ]; then
-  for unit in doedesk-api doedesk-nightly doedesk-geo-update doedesk-litestream doedesk-replica-sync doedesk-snapshot doedesk-check "doedesk-alert@"; do
+  for unit in doedesk-api doedesk-nightly doedesk-geo-update doedesk-litestream doedesk-replica-sync doedesk-snapshot doedesk-restore-test doedesk-check "doedesk-alert@"; do
     install -d -m 0755 "/etc/systemd/system/$unit.service.d"
     printf '[Service]\nReadWritePaths=%s\n' "$data" > "/etc/systemd/system/$unit.service.d/data-folder.conf"
   done

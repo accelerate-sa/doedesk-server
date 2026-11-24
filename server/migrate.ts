@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * Applies the files in `migrations/` that the database has not had yet, in name order.
  *
@@ -8,16 +10,22 @@
  * Each file is applied together with its ledger row in one transaction: a file that fails leaves
  * the database as it was.
  *
+ * A layer beside the service (server/extension.ts) may bring a folder of its own. Its files are
+ * applied after these and recorded in a ledger of its own, so each set knows only its own names.
+ *
  *   bun server/migrate.ts            apply what is pending (reads DOEDESK_DATABASE)
  *   bun server/migrate.ts --status   list applied and pending, change nothing
+ *   bun server/migrate.ts --layer    apply only what a layer beside the service brings: for a
+ *                                    database that arrived with this service's own already applied
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { SqliteDriver } from "./d1.ts";
 
-const LEDGER =
-  "CREATE TABLE IF NOT EXISTS d1_migrations(\n" +
+const MAIN_LEDGER = "d1_migrations";
+const ledgerSql = (ledger: string): string =>
+  `CREATE TABLE IF NOT EXISTS ${ledger}(\n` +
   "\t\tid         INTEGER PRIMARY KEY AUTOINCREMENT,\n" +
   "\t\tname       TEXT UNIQUE,\n" +
   "\t\tapplied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL\n)";
@@ -34,9 +42,9 @@ const files = (directory: string): Array<string> =>
     .filter((name) => name.endsWith(".sql"))
     .sort();
 
-export const migrationState = (driver: SqliteDriver, directory: string): MigrationState => {
-  const hasLedger = driver.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'd1_migrations'", []).length > 0;
-  const applied = hasLedger ? driver.query("SELECT name FROM d1_migrations ORDER BY id", []).map((row) => String(row.name)) : [];
+export const migrationState = (driver: SqliteDriver, directory: string, ledger: string = MAIN_LEDGER): MigrationState => {
+  const hasLedger = driver.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [ledger]).length > 0;
+  const applied = hasLedger ? driver.query(`SELECT name FROM ${ledger} ORDER BY id`, []).map((row) => String(row.name)) : [];
   const known = files(directory);
   return {
     applied,
@@ -46,15 +54,15 @@ export const migrationState = (driver: SqliteDriver, directory: string): Migrati
 };
 
 /** Applies every pending file. Returns the names applied. */
-export const migrate = (driver: SqliteDriver, directory: string): Array<string> => {
-  driver.exec(LEDGER);
+export const migrate = (driver: SqliteDriver, directory: string, ledger: string = MAIN_LEDGER): Array<string> => {
+  driver.exec(ledgerSql(ledger));
   const done: Array<string> = [];
-  for (const name of migrationState(driver, directory).pending) {
+  for (const name of migrationState(driver, directory, ledger).pending) {
     const sql = readFileSync(join(directory, name), "utf8");
     driver.exec("BEGIN IMMEDIATE");
     try {
       driver.exec(sql);
-      driver.query("INSERT INTO d1_migrations (name) VALUES (?)", [name]);
+      driver.query(`INSERT INTO ${ledger} (name) VALUES (?)`, [name]);
       driver.exec("COMMIT");
     } catch (cause) {
       try {
@@ -80,15 +88,20 @@ const main = async (): Promise<void> => {
   }
   const directory = resolve(process.env.DOEDESK_MIGRATIONS_DIR ?? join(dirname(dirname(fileURLToPath(import.meta.url))), "migrations"));
   const driver = (await loadRuntime()).openDatabase(resolve(path));
+  const { EXTENSION_LEDGER, extensionMigrations } = await import("./extension.ts");
+  const layer = extensionMigrations();
   try {
     if (process.argv.includes("--status")) {
       const state = migrationState(driver, directory);
-      console.log(`applied: ${state.applied.join(", ") || "none"}`);
-      console.log(`pending: ${state.pending.join(", ") || "none"}`);
-      if (state.unknown.length > 0) console.log(`in the database but not in this code: ${state.unknown.join(", ")}`);
+      const extra = layer === null ? null : migrationState(driver, layer, EXTENSION_LEDGER);
+      // One line each, the layer's names after the service's own: deploy.sh reads `pending:`.
+      console.log(`applied: ${[...state.applied, ...(extra?.applied ?? [])].join(", ") || "none"}`);
+      console.log(`pending: ${[...state.pending, ...(extra?.pending ?? [])].join(", ") || "none"}`);
+      const unknown = [...state.unknown, ...(extra?.unknown ?? [])];
+      if (unknown.length > 0) console.log(`in the database but not in this code: ${unknown.join(", ")}`);
       return;
     }
-    const done = migrate(driver, directory);
+    const done = [...(process.argv.includes("--layer") ? [] : migrate(driver, directory)), ...(layer === null ? [] : migrate(driver, layer, EXTENSION_LEDGER))];
     console.log(done.length === 0 ? "nothing to apply" : `applied: ${done.join(", ")}`);
   } finally {
     driver.close();

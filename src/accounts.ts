@@ -1,6 +1,11 @@
-import { ApiError, type Env, monthsBefore, nowIso, randomToken, sha256Hex, text } from "./http.ts";
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
+import { ApiError, type Env, json, monthsBefore, nowIso, randomToken, rateLimit, readJson, sha256Hex, text } from "./http.ts";
 import { isFrozen } from "./maintenance.ts";
 import { SESSION_IDLE_MONTHS } from "./periods.ts";
+import { defaultAccountRegion } from "./regions.ts";
+import { extension, workerDecision } from "./extension.ts";
+import { type AccountRegion, accountRegion, workerDescription, workerNotIncluded } from "./worker-regions.ts";
 
 export const SESSION_CLIENTS = ["desktop", "web", "mobile", "server", "site"] as const;
 export type SessionClient = (typeof SESSION_CLIENTS)[number];
@@ -31,6 +36,10 @@ export interface Account {
   readonly profileAnswered: boolean;
   readonly field: string | null;
   readonly workplace: string | null;
+  /** Where the worker for this account's sealed documents runs. See worker-regions.ts. */
+  readonly region: AccountRegion;
+  /** When the person last changed the region. Null: it is what the account started with. */
+  readonly regionUpdatedAt: string | null;
 }
 
 /** An account as a request presents it: with the client its session was made for. */
@@ -44,6 +53,8 @@ interface UserRow {
   readonly profile_at: string | null;
   readonly field: string | null;
   readonly workplace: string | null;
+  readonly region: string;
+  readonly region_updated_at: string | null;
 }
 
 const accountOf = (row: UserRow): Account => ({
@@ -54,9 +65,12 @@ const accountOf = (row: UserRow): Account => ({
   profileAnswered: row.profile_at !== null,
   field: row.field,
   workplace: row.workplace,
+  // A value no code wrote reads as the region with no restriction, never as someone else's.
+  region: accountRegion(row.region) ?? "global",
+  regionUpdatedAt: row.region_updated_at,
 });
 
-const USER_COLUMNS = "users.id, users.email, users.phone, users.is_admin, users.profile_at, users.field, users.workplace";
+const USER_COLUMNS = "users.id, users.email, users.phone, users.is_admin, users.profile_at, users.field, users.workplace, users.region, users.region_updated_at";
 
 /** What the apps show for an account. A phone number is shown with its middle hidden. */
 export const publicAccount = (account: Account) => ({
@@ -64,6 +78,8 @@ export const publicAccount = (account: Account) => ({
   email: account.email,
   phone: account.phone === null ? null : `${account.phone.slice(0, 6)}•••${account.phone.slice(-3)}`,
   profileAnswered: account.profileAnswered,
+  region: account.region,
+  regionUpdatedAt: account.regionUpdatedAt,
 });
 
 /**
@@ -84,10 +100,11 @@ export const findOrCreateUser = async (
   if (refuseNew !== null) throw refuseNew;
   const id = crypto.randomUUID();
   await env.DB.prepare(
-    `INSERT INTO users (id, ${column}, created_at, country, signup_method) VALUES (?, ?, ?, ?, ?) ` +
+    `INSERT INTO users (id, ${column}, created_at, country, signup_method, region) VALUES (?, ?, ?, ?, ?, ?) ` +
       `ON CONFLICT (${column}) DO NOTHING`,
   )
-    .bind(id, identifier.value, nowIso(), country, identifier.kind)
+    // The region is guessed here, once. No later sign-in changes it; only the person does.
+    .bind(id, identifier.value, nowIso(), country, identifier.kind, defaultAccountRegion(identifier.kind, country))
     .run();
   // Two sign-ins for a new identifier can race; whichever row won is the account.
   const row = await env.DB.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE ${column} = ?`)
@@ -197,4 +214,38 @@ export const saveProfile = async (
   await env.DB.prepare("UPDATE users SET field = ?, field_other = ?, workplace = ?, profile_at = ? WHERE id = ?")
     .bind(field, field === "other" ? text(body.fieldOther, 80) : null, workplace, nowIso(), userId)
     .run();
+};
+
+/**
+ * POST /v1/me/region `{ "region": "sa" | "eu" | "global" }`. The person's own choice of where the
+ * worker for their sealed documents runs. It takes effect with the next request to the worker.
+ * Each change is added to the account's history; choosing the region the account already has
+ * changes nothing and adds nothing. The region governs only the hosted worker, so an account
+ * without it is refused and nothing is recorded for it.
+ */
+export const changeRegion = async (request: Request, env: Env): Promise<Response> => {
+  const account = await authenticate(request, env);
+  const decision = await workerDecision(env, account);
+  if (!decision.included) throw decision.refusal ?? workerNotIncluded();
+  const region = accountRegion((await readJson(request)).region);
+  if (region === null) throw new ApiError(400, "invalid_request", "`region` must be \"sa\", \"eu\" or \"global\".");
+  // A layer beside the service may hold the account to certain regions (src/extension.ts).
+  if (region !== account.region) await extension().regionChange?.(env, account, region);
+  let regionUpdatedAt = account.regionUpdatedAt;
+  if (region !== account.region) {
+    await rateLimit(env, `region:${account.userId}`, 3600, 20, "Too many changes of region. Try again in an hour.");
+    regionUpdatedAt = nowIso();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE users SET region = ?, region_updated_at = ? WHERE id = ?").bind(region, regionUpdatedAt, account.userId),
+      env.DB.prepare("INSERT INTO region_changes (id, user_id, from_region, to_region, changed_at, client) VALUES (?, ?, ?, ?, ?, ?)").bind(
+        crypto.randomUUID(),
+        account.userId,
+        account.region,
+        region,
+        regionUpdatedAt,
+        account.client,
+      ),
+    ]);
+  }
+  return json({ region, regionUpdatedAt, worker: workerDescription(env, region, await workerDecision(env, { ...account, region })) });
 };

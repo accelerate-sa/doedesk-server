@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Runs the shared operations against the server's wrapper on whichever runtime started this file,
 // and prints the answers as JSON. Used by d1-parity.mjs.
 import { mkdtempSync, rmSync } from "node:fs";

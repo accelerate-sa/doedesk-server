@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Checks the code against the documents in `legal/`, without starting the service:
 //   - the versions in src/legal.ts are the versions the four documents carry, the effective date is
 //     set in both places or in neither, and any hash in the code is the hash of the file;

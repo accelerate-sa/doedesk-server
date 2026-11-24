@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Computes the SEV-SNP launch measurements an Oracle Cloud confidential VM (VM.Standard.E5.Flex or
 # E6.Flex) reports, from Oracle's public firmware package, without trusting Oracle's own list.
 #

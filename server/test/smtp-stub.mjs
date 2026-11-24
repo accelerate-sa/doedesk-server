@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // A mail submission server for tests: speaks enough SMTP to take one message per connection, with
 // STARTTLS on a certificate made for the run. Stands in for Oracle Email Delivery.
 //

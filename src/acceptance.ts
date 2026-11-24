@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 /**
  * Acceptance of the Terms of Use: taking it with a sign-in, recording it, and saying whether an
  * account is up to date. The design is `legal/consent-spec.md`, sections 4 to 7.
@@ -182,7 +184,7 @@ export const settleSignInAcceptance = async (
   });
 };
 
-/** For detection and reading: refuses an account whose acceptance is outstanding, when the switch says "all". */
+/** For detection, reading and the worker: refuses an account whose acceptance is outstanding, when the switch says "all". */
 export const requireAccepted = async (env: Env, userId: string): Promise<void> => {
   if (acceptanceRule(env) !== "all") return;
   if ((await acceptanceStatus(env, userId)).outstanding) {

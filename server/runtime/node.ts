@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Accelerate Technology Establishment
 // Node: `node:sqlite` and `node:http`. The fallback if Bun proves unsuitable; the tests run on both.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -39,14 +41,23 @@ const openDatabase = (path: string, options: OpenOptions = {}): SqliteDriver => 
 
 class BodyTooLarge extends Error {}
 
-const toRequest = (incoming: IncomingMessage, maxBodyBytes: number): Request => {
+/** Aborts when the connection closes before the answer was written: the caller went away. */
+const goneSignal = (outgoing: ServerResponse): AbortSignal => {
+  const gone = new AbortController();
+  outgoing.once("close", () => {
+    if (!outgoing.writableFinished) gone.abort();
+  });
+  return gone.signal;
+};
+
+const toRequest = (incoming: IncomingMessage, maxBodyBytes: number, signal: AbortSignal): Request => {
   const headers = new Headers();
   for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
     headers.append(incoming.rawHeaders[index] ?? "", incoming.rawHeaders[index + 1] ?? "");
   }
   const method = incoming.method ?? "GET";
   const url = `http://${incoming.headers.host ?? "localhost"}${incoming.url ?? "/"}`;
-  if (method === "GET" || method === "HEAD") return new Request(url, { method, headers });
+  if (method === "GET" || method === "HEAD") return new Request(url, { method, headers, signal });
   let taken = 0;
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -66,7 +77,7 @@ const toRequest = (incoming: IncomingMessage, maxBodyBytes: number): Request => 
       incoming.destroy();
     },
   });
-  return new Request(url, { method, headers, body, duplex: "half" } as RequestInit);
+  return new Request(url, { method, headers, body, signal, duplex: "half" } as RequestInit);
 };
 
 const send = async (response: Response, outgoing: ServerResponse): Promise<void> => {
@@ -99,7 +110,7 @@ const serve = async (options: ServeOptions): Promise<RunningServer> => {
       return;
     }
     options
-      .fetch(toRequest(incoming, options.maxBodyBytes), incoming.socket.remoteAddress ?? "")
+      .fetch(toRequest(incoming, options.maxBodyBytes, goneSignal(outgoing)), incoming.socket.remoteAddress ?? "")
       .then((response) => send(response, outgoing))
       .catch(() => {
         if (!outgoing.headersSent) outgoing.writeHead(500, { "content-type": "application/json; charset=utf-8" });

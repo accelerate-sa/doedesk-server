@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Accelerate Technology Establishment
 # Brings the database back from a backup, into a NEW file. It never touches the running database:
 # putting the restored file into service is a separate, deliberate step (the runbook, "Restore").
 #
