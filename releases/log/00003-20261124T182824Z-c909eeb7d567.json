@@ -1,0 +1,23 @@
+{
+  "schema": "doedesk-release/1",
+  "service": "api.doedesk.com",
+  "repository": "https://github.com/accelerate-sa/doedesk-server",
+  "sequence": 3,
+  "release": "20261124T182823Z-c909eeb7d567",
+  "commit": "c909eeb7d567178a2913b9453c7057b38ac22bc4",
+  "archive": {
+    "sha256": "9b7422fa791d900668a04a6a535e915a47bb05e7d941ceb3b902a83f742f0e99",
+    "bytes": 972800,
+    "made": "git archive --format=tar c909eeb7d567178a2913b9453c7057b38ac22bc4 -- server src migrations docs package.json"
+  },
+  "layer": {
+    "name": "enterprise",
+    "sha256": "2eadef532c04c07a6f22dd2f74271db455755c53af068704d1154a443add2c1d",
+    "bytes": 204800
+  },
+  "deployedAt": "2026-11-24T18:28:24Z",
+  "previous": {
+    "name": "00002-20261119T150017Z-6d81a1448a81.json",
+    "sha256": "493f97986ff77b684d55caabf93c6567aedce6d6368e3a813d4531fe027f7138"
+  }
+}
