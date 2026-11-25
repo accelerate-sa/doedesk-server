@@ -94,7 +94,7 @@ const rawMail = (to, subject) =>
       "a second session": await call("POST", "/v1/auth/sessions", { token: token("frozen"), body: { client: "server" } }),
       "signing out": await call("POST", "/v1/auth/sign-out", { token: token("frozen") }),
       "the onboarding answers": await call("POST", "/v1/me/profile", { token: token("frozen"), body: { field: "legal" } }),
-      "accepting the Terms": await call("POST", "/v1/me/acceptance", { token: token("frozen"), body: { acceptance: { termsVersion: "1.2", privacyVersion: "1.2", locale: "en" } } }),
+      "accepting the Terms": await call("POST", "/v1/me/acceptance", { token: token("frozen"), body: { acceptance: { termsVersion: "1.3", privacyVersion: "1.3", locale: "en" } } }),
       "a copy of the account": await call("GET", "/v1/me/export", { token: token("frozen") }),
       "deleting the account": await call("DELETE", "/v1/me", { token: token("frozen") }),
       "usage events": await call("POST", "/ingest/batch", { body: { api_key: "doedesk-client", batch: [] } }),

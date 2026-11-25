@@ -17,6 +17,7 @@
 // It starts two copies of the service on throwaway databases, with stand-ins for the engine, SMS and
 // mail (see local-service.mjs). Nothing outside this machine is called.
 import { client, sha256Hex, startLocalService } from "./local-service.mjs";
+import { LEGAL } from "../src/legal.ts";
 
 let failures = 0;
 const expect = (label, condition, detail = null) => {
@@ -78,8 +79,8 @@ const acceptanceRow = (name, extra = {}) => ({
   user_id: id(name),
   document: "terms",
   decision: "accepted",
-  terms_version: "1.2",
-  privacy_version: "1.2",
+  terms_version: "1.3",
+  privacy_version: "1.3",
   locale: "en",
   method: "checkbox+button",
   identifier_kind: "email",
@@ -167,7 +168,7 @@ const seedA = [
     acceptanceRow("closed-recently", { id: "acceptance-kept", account_closed_at: near(FIVE_YEARS, +DAY), country: null, login_request_id: null }),
   ]),
   insert("login_requests", [
-    { id: "attempt-past", kind: "email", identifier: "nobody@seeded.example", secret_hash: "x", client: "desktop", created_at: daysAgo(3).toISOString(), expires_at: near(daysAgo(1), -HOUR), acceptance: '{"termsVersion":"1.2"}' },
+    { id: "attempt-past", kind: "email", identifier: "nobody@seeded.example", secret_hash: "x", client: "desktop", created_at: daysAgo(3).toISOString(), expires_at: near(daysAgo(1), -HOUR), acceptance: '{"termsVersion":"1.3"}' },
     { id: "attempt-kept", kind: "email", identifier: "nobody@seeded.example", secret_hash: "x", client: "desktop", created_at: daysAgo(1).toISOString(), expires_at: near(daysAgo(1), +HOUR) },
     { id: "attempt-of-unused", kind: "email", identifier: "unused-past@seeded.example", secret_hash: "x", client: "desktop", created_at: NOW.toISOString(), expires_at: near(NOW, +HOUR) },
   ]),
@@ -215,7 +216,7 @@ const seedA = [
   ]),
 ].join("\n");
 
-const ACCEPTANCE = { termsVersion: "1.2", privacyVersion: "1.2", wordingId: "signup-2026-11", locale: "ar", appVersion: "0.2.0" };
+const ACCEPTANCE = { termsVersion: "1.3", privacyVersion: "1.3", wordingId: "signup-2026-11", locale: "ar", appVersion: "0.2.0" };
 const from = (country, region) => ({ "x-test-country": country, ...(region === undefined ? {} : { "x-test-region": region }) });
 const form = (fields) => ({ raw: new URLSearchParams(fields).toString(), headers: { "content-type": "application/x-www-form-urlencoded" } });
 const rawMail = (to, subject, text) =>
@@ -272,7 +273,7 @@ const mustNotBeLogged = new Set();
   try {
     // --- The versions in force -------------------------------------------------------------------
     const legal = await call("GET", "/v1/legal");
-    same("versions: public, and name both documents with their links", [legal.status, legal.json?.terms?.version, legal.json?.terms?.requiredVersion, legal.json?.privacy?.version, legal.json?.terms?.url, legal.json?.privacy?.url?.ar], [200, "1.2", "1.2", "1.2", { en: "https://doedesk.com/terms", ar: "https://doedesk.com/ar/terms" }, "https://doedesk.com/ar/privacy"]);
+    same("versions: public, and name both documents with their links", [legal.status, legal.json?.terms?.version, legal.json?.terms?.requiredVersion, legal.json?.privacy?.version, legal.json?.terms?.url, legal.json?.privacy?.url?.ar], [200, "1.3", "1.3", "1.3", { en: "https://doedesk.com/terms", ar: "https://doedesk.com/ar/terms" }, "https://doedesk.com/ar/privacy"]);
     same("versions: say that acceptance is not required yet", legal.json?.acceptance, { requiredToSignIn: false, requiredToUse: false });
 
     // --- Usage data: the default by country ------------------------------------------------------
@@ -284,16 +285,16 @@ const mustNotBeLogged = new Set();
     same("usage data: in Canada only Quebec asks first, and Canada without a region asks", [await rule("CA", "QC"), await rule("CA", "ON"), await rule("CA")], ["ask", "notice", "ask"]);
     const options = await call("GET", "/v1/auth/options", { headers: from("SA") });
     expect("options: still what released apps read", options.json?.country === "SA" && options.json?.default === "phone" && options.json?.methods?.join() === "phone,email", options.json);
-    expect("options: carry the list of consent regions, the versions, and that sign-up is open", options.json?.usageDataConsentRegions?.includes("DE") && options.json?.usageDataConsentRegions?.includes("CA-QC") && !options.json?.usageDataConsentRegions?.includes("SA") && options.json?.legal?.terms?.version === "1.2" && options.json?.signUp?.available === true, options.json);
+    expect("options: carry the list of consent regions, the versions, and that sign-up is open", options.json?.usageDataConsentRegions?.includes("DE") && options.json?.usageDataConsentRegions?.includes("CA-QC") && !options.json?.usageDataConsentRegions?.includes("SA") && options.json?.legal?.terms?.version === "1.3" && options.json?.signUp?.available === true, options.json);
 
     // --- An app up to 0.1.x: no acceptance sent --------------------------------------------------
     const oldApp = await signIn("old.app@person.example");
     mustNotBeLogged.add("old.app@person.example").add(oldApp.accountId).add(oldApp.token);
     expect("old app: signs in and gets an account without sending an acceptance", oldApp.poll?.status === 200 && oldApp.poll.json.status === "approved" && oldApp.poll.json.created === true && oldApp.token?.startsWith("dd_"), oldApp.poll);
-    same("old app: the answer still has what it reads, and adds where acceptance stands", [typeof oldApp.poll.json.account?.email, oldApp.poll.json.acceptance?.outstanding, oldApp.poll.json.acceptance?.blocked, oldApp.poll.json.legal?.terms?.version], ["string", true, false, "1.2"]);
+    same("old app: the answer still has what it reads, and adds where acceptance stands", [typeof oldApp.poll.json.account?.email, oldApp.poll.json.acceptance?.outstanding, oldApp.poll.json.acceptance?.blocked, oldApp.poll.json.legal?.terms?.version], ["string", true, false, "1.3"]);
     same("old app: no acceptance was recorded for it", count("acceptances WHERE user_id = ?", oldApp.accountId), 0);
     const oldMe = await call("GET", "/v1/me", { token: oldApp.token });
-    same("old app: its account is marked as outstanding, not refused", [oldMe.status, oldMe.json?.acceptance?.outstanding, oldMe.json?.acceptance?.termsVersion, oldMe.json?.acceptance?.requiredTermsVersion], [200, true, null, "1.2"]);
+    same("old app: its account is marked as outstanding, not refused", [oldMe.status, oldMe.json?.acceptance?.outstanding, oldMe.json?.acceptance?.termsVersion, oldMe.json?.acceptance?.requiredTermsVersion], [200, true, null, "1.3"]);
     const oldDetect = await call("POST", "/v1/detect", { body: { texts: ["Jane Doe"] }, token: oldApp.token });
     expect("old app: detection still works", oldDetect.status === 200 && oldDetect.json.results?.[0]?.entities?.length === 1, oldDetect);
 
@@ -302,17 +303,17 @@ const mustNotBeLogged = new Set();
     mustNotBeLogged.add("new.app@person.example").add(person.accountId).add(person.token).add(person.start.json.pollSecret);
     const linkSecret = new URLSearchParams(new URL(person.start.json.emailedLink).hash.slice(1)).get("t");
     mustNotBeLogged.add(linkSecret);
-    expect("acceptance: sign-in with it succeeds and the account is up to date", person.poll?.status === 200 && person.poll.json.created === true && person.poll.json.acceptance?.outstanding === false && person.poll.json.acceptance?.termsVersion === "1.2", person.poll);
+    expect("acceptance: sign-in with it succeeds and the account is up to date", person.poll?.status === 200 && person.poll.json.created === true && person.poll.json.acceptance?.outstanding === false && person.poll.json.acceptance?.termsVersion === "1.3", person.poll);
     const record = service.query("SELECT * FROM acceptances WHERE user_id = ?", person.accountId);
     const { id: recordId, accepted_at: acceptedAt, ...recorded } = record[0] ?? {};
     same("acceptance: one row, with the account, versions, language, wording, act, app, country and the verified attempt", recorded, {
       user_id: person.accountId,
       document: "terms",
       decision: "accepted",
-      terms_version: "1.2",
-      privacy_version: "1.2",
-      terms_sha256: null,
-      privacy_sha256: null,
+      terms_version: "1.3",
+      privacy_version: "1.3",
+      terms_sha256: LEGAL.terms.sha256.ar,
+      privacy_sha256: LEGAL.privacy.sha256.ar,
       wording_id: "signup-2026-11",
       locale: "ar",
       method: "checkbox+button",
@@ -324,7 +325,7 @@ const mustNotBeLogged = new Set();
       account_closed_at: null,
     });
     expect("acceptance: the time is the service's, to the second", record.length === 1 && Math.abs(Date.parse(acceptedAt) - Date.now()) < 120_000 && typeof recordId === "string", record);
-    same("acceptance: the attempt held it until the link was confirmed", JSON.parse(service.query("SELECT acceptance FROM login_requests WHERE id = ?", person.start.json.requestId)[0].acceptance).termsVersion, "1.2");
+    same("acceptance: the attempt held it until the link was confirmed", JSON.parse(service.query("SELECT acceptance FROM login_requests WHERE id = ?", person.start.json.requestId)[0].acceptance).termsVersion, "1.3");
     await new Promise((resolve) => setTimeout(resolve, 61_000 - (Date.now() % 60_000) + 500)); // the next minute: one link a minute per address
     const again = await signIn("new.app@person.example", { acceptance: { ...ACCEPTANCE, locale: "en" }, headers: from("SA") });
     mustNotBeLogged.add(again.token);
@@ -414,7 +415,7 @@ const mustNotBeLogged = new Set();
     same("export: three sign-ins, one of them this one", [copy.json?.signIns?.length, copy.json?.signIns?.filter((item) => item.thisSignIn).length], [3, 1]);
     same("export: the usage records, day by day", copy.json?.usage?.daily?.map((row) => [row.day, row.client, row.detect_requests, row.detect_characters, row.ocr_files, row.ocr_pages]), held.daily.map((row) => [row.day, row.client, row.detect_requests, row.detect_characters, row.ocr_files, row.ocr_pages]));
     expect("export: the usage records hold what was just used", copy.json?.usage?.daily?.[0]?.detect_characters === 15 && copy.json?.usage?.daily?.[0]?.ocr_pages === 3, copy.json?.usage);
-    same("export: the acceptance history and where it stands", [copy.json?.termsAcceptance?.history?.length, copy.json?.termsAcceptance?.history?.[0]?.terms_version, copy.json?.termsAcceptance?.history?.[0]?.wording_id, copy.json?.termsAcceptance?.status?.outstanding], [1, "1.2", "signup-2026-11", false]);
+    same("export: the acceptance history and where it stands", [copy.json?.termsAcceptance?.history?.length, copy.json?.termsAcceptance?.history?.[0]?.terms_version, copy.json?.termsAcceptance?.history?.[0]?.wording_id, copy.json?.termsAcceptance?.status?.outstanding], [1, "1.3", "signup-2026-11", false]);
     same("export: the sign-in attempts for its address", copy.json?.signInAttempts?.length, held.attempts);
     expect("export: no hash of a token, code or link secret, and nothing of another account", !/token_hash|secret_hash|poll_hash/.test(copy.text) && !copy.text.includes("old.app@person.example") && !copy.text.includes("0500009001") && !copy.text.includes(pending.json?.requestId ?? "none"), copy.text.slice(0, 300));
     expect("export: says what it cannot include", Array.isArray(copy.json?.notIncluded) && copy.json.notIncluded.length >= 3, copy.json?.notIncluded);
@@ -445,7 +446,7 @@ const mustNotBeLogged = new Set();
     same("delete: no row of any other account was touched", everyoneElse(), othersBefore);
     same("delete: exactly one account went, and nothing that is not tied to an account", { users: count("users"), mail: count("contact_mail"), events: count("events") }, { ...totalsBefore, users: totalsBefore.users - 1 });
     const proof = service.query("SELECT * FROM acceptances WHERE user_id = ?", person.accountId)[0];
-    expect("delete: the proof is cut down and stamped with the closing time", proof.account_closed_at === deleted.json.deletedAt && proof.country === null && proof.login_request_id === null && proof.terms_version === "1.2" && proof.wording_id === "signup-2026-11", proof);
+    expect("delete: the proof is cut down and stamped with the closing time", proof.account_closed_at === deleted.json.deletedAt && proof.country === null && proof.login_request_id === null && proof.terms_version === "1.3" && proof.wording_id === "signup-2026-11", proof);
     expect("delete: nowhere in the database does the address remain", !JSON.stringify(["users", "sessions", "login_requests", "rate_limits", "acceptances", "rights_requests", "deletion_receipts", "usage_daily", "usage"].map((table) => service.query(`SELECT * FROM ${table}`))).includes("new.app@person.example"));
     same("delete: written to the log, with the account's identifier and no content", service.query("SELECT type, channel, outcome, account_id FROM rights_requests WHERE account_id = ? AND type = 'deletion'", person.accountId).map((row) => ({ ...row })), [{ type: "deletion", channel: "app", outcome: "done", account_id: person.accountId }]);
     const repeated = await call("DELETE", "/v1/me", { token: again.token });
@@ -572,11 +573,11 @@ const mustNotBeLogged = new Set();
     const privacyPage = await call("GET", "/admin/privacy", { headers: admin });
     const acceptedNow = service.query("SELECT COUNT(DISTINCT user_id) AS n FROM acceptances WHERE account_closed_at IS NULL AND user_id IN (SELECT id FROM users)")[0].n;
     expect("privacy page: counts who has accepted, and lists who has not", privacyPage.status === 200 && privacyPage.text.includes(`<h2>Terms accepted</h2><div class="figure">${acceptedNow}</div>`) && privacyPage.text.includes(`<h2>Not accepted</h2><div class="figure">${count("users") - acceptedNow}</div>`) && privacyPage.text.includes("stale@seeded.example") && !privacyPage.text.includes(">bystander@seeded.example<"), privacyPage.text.slice(0, 400));
-    expect("privacy page: says what is in force", privacyPage.text.includes("Recorded when sent; not required") && privacyPage.text.includes("1 mailbox") && privacyPage.text.includes("no effective date set") && privacyPage.text.includes("Nowhere"));
+    expect("privacy page: says what is in force", privacyPage.text.includes("Recorded when sent; not required") && privacyPage.text.includes("1 mailbox") && privacyPage.text.includes("from 2026-11-25") && privacyPage.text.includes("Nowhere"));
     const acceptedAccount = await call("GET", `/admin/accounts/${id("viewed")}`, { headers: admin });
     expect("account page: shows that an account has not accepted, with export and delete", acceptedAccount.status === 200 && acceptedAccount.text.includes("Not accepted") && acceptedAccount.text.includes('name="action" value="export"') && acceptedAccount.text.includes('name="action" value="delete"'), acceptedAccount.text.slice(0, 300));
     await call("POST", "/v1/me/acceptance", { body: { acceptance: ACCEPTANCE }, token: token("viewed") });
-    expect("account page: shows the version accepted, and the record", (await call("GET", `/admin/accounts/${id("viewed")}`, { headers: admin })).text.match(/Accepted 1\.2 on \d+ \w+ \d{4}/) !== null);
+    expect("account page: shows the version accepted, and the record", (await call("GET", `/admin/accounts/${id("viewed")}`, { headers: admin })).text.match(/Accepted 1\.3 on \d+ \w+ \d{4}/) !== null);
 
     // --- A request that came by mail: export, then deletion, with a confirmation step ------------
     const byMail = id("by-mail");
@@ -710,7 +711,7 @@ const mustNotBeLogged = new Set();
     // --- No sign-in without acceptance ----------------------------------------------------------
     const refusedEmail = await call("POST", "/v1/auth/email/start", { body: { email: "no.tick@person.example", client: "desktop" }, headers: from("SA") });
     const refusedPhone = await call("POST", "/v1/auth/phone/start", { body: { phone: "0500007001" }, headers: from("SA") });
-    same("required: starting without an acceptance is refused, by email and by phone, with the versions to show", [refusedEmail.status, refusedEmail.json?.error?.code, refusedEmail.json?.error?.legal?.terms?.version, refusedPhone.status, refusedPhone.json?.error?.code], [400, "terms_required", "1.2", 400, "terms_required"]);
+    same("required: starting without an acceptance is refused, by email and by phone, with the versions to show", [refusedEmail.status, refusedEmail.json?.error?.code, refusedEmail.json?.error?.legal?.terms?.version, refusedPhone.status, refusedPhone.json?.error?.code], [400, "terms_required", "1.3", 400, "terms_required"]);
     same("required: a refused start leaves no attempt, no account and no counter", [count("login_requests"), count("users WHERE email = 'no.tick@person.example'"), count("rate_limits WHERE key LIKE 'mail:to:%' OR key LIKE 'sms:%'")], [0, 0, 0]);
     const accepted = await signIn("ticked@person.example", { acceptance: ACCEPTANCE, headers: from("SA") });
     expect("required: with it, the account is made and the acceptance recorded", accepted.poll?.json?.created === true && accepted.poll.json.acceptance?.outstanding === false && count("acceptances WHERE user_id = ?", accepted.accountId) === 1, accepted.poll ?? accepted.start);

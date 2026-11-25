@@ -32,19 +32,19 @@ interface PublishedDocument {
 
 export const LEGAL = {
   terms: {
-    version: "1.2",
-    required: "1.2",
-    published: ["1.1", "1.2"],
-    effective: null,
-    sha256: { en: null, ar: null },
+    version: "1.3",
+    required: "1.3",
+    published: ["1.1", "1.2", "1.3"],
+    effective: "2026-11-25",
+    sha256: { en: "23d1013155cabc580eb782ec695474cf9d109cf982c4149e046465a8a12fcdb2", ar: "7bb68e9685a7f11355f96a5e3fbabb1811607d7109e57747a788616e33b7bdd0" },
     url: { en: `${SITE_ORIGIN}/terms`, ar: `${SITE_ORIGIN}/ar/terms` },
   },
   privacy: {
-    version: "1.2",
-    required: "1.2",
-    published: ["1.1", "1.2"],
-    effective: null,
-    sha256: { en: null, ar: null },
+    version: "1.3",
+    required: "1.3",
+    published: ["1.1", "1.2", "1.3"],
+    effective: "2026-11-25",
+    sha256: { en: "61c19b9c4cdb5c4cf8a1a74bd2848782c9550805cf08595ccdb578f4f02c81c0", ar: "10de28d8aaec0c0a7a0576f1a0247bee0a1fb70d6dbc2415a7ea4e7092451691" },
     url: { en: `${SITE_ORIGIN}/privacy`, ar: `${SITE_ORIGIN}/ar/privacy` },
   },
 } as const satisfies Record<"terms" | "privacy", PublishedDocument>;

@@ -70,12 +70,12 @@ expect(`consent regions: the ${inCode.size} in the code are the ${listed.size} i
 // --- Keeping times ------------------------------------------------------------------------------
 const policy = read("privacy.en.md");
 const states = (label, sentence) => expect(`periods: the policy says "${sentence}"`, policy.includes(sentence), label);
-states("ACCOUNT_UNUSED_MONTHS", `after ${periods.ACCOUNT_UNUSED_MONTHS} months without use`);
-states("SIGN_IN_ATTEMPT_DAYS_AFTER_EXPIRY", `| Sign-in attempts | ${periods.SIGN_IN_ATTEMPT_DAYS_AFTER_EXPIRY === 1 ? "One day" : `${periods.SIGN_IN_ATTEMPT_DAYS_AFTER_EXPIRY} days`} after they expire |`);
+states("ACCOUNT_UNUSED_MONTHS", `after ${periods.ACCOUNT_UNUSED_MONTHS} months of inactivity`);
+states("SIGN_IN_ATTEMPT_DAYS_AFTER_EXPIRY", `| Sign-in attempts | ${periods.SIGN_IN_ATTEMPT_DAYS_AFTER_EXPIRY} day${periods.SIGN_IN_ATTEMPT_DAYS_AFTER_EXPIRY === 1 ? "" : "s"} after expiry |`);
 states("USAGE_DATA_DAYS", `| App usage data | ${periods.USAGE_DATA_DAYS} days |`);
 states("ERROR_REPORT_DAYS", `| Error reports | ${periods.ERROR_REPORT_DAYS} days |`);
-states("CONTACT_MAIL_MONTHS_AFTER_CLOSED", `| Messages you send us | ${periods.CONTACT_MAIL_MONTHS_AFTER_CLOSED} months after the matter is closed |`);
-states("DAILY_RETENTION_DAYS", `(${DAILY_RETENTION_DAYS} days, to the end of that calendar month)`);
+states("CONTACT_MAIL_MONTHS_AFTER_CLOSED", `| Support & rights emails | ${periods.CONTACT_MAIL_MONTHS_AFTER_CLOSED} months after closure`);
+states("DAILY_RETENTION_DAYS", `Daily counts: ${DAILY_RETENTION_DAYS} days`);
 
 console.log(failures === 0 ? "\nall passed" : `\n${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);
