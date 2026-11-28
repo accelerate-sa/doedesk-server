@@ -86,6 +86,11 @@ export interface Env extends WorkerRegionEnv {
   readonly MAIL_RELAY_KEY?: string;
   /** Opens `POST /internal/inbound-mail`. Unset: that route does not exist. */
   readonly MAIL_INGEST_KEY?: string;
+  /** Cloudflare Turnstile widget keys and protected phone number for public legal pages. */
+  readonly TURNSTILE_SITE_KEY?: string;
+  readonly TURNSTILE_SECRET_KEY?: string;
+  readonly TURNSTILE_VERIFY_URL?: string;
+  readonly CONTACT_PHONE?: string;
 }
 
 export const SITE_ORIGIN = "https://doedesk.com";

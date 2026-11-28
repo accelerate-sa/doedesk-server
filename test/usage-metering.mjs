@@ -460,6 +460,12 @@ try {
   same("accounts page: search finds a phone number typed the local way", rowIds(foundPhone.text), [phoneUser.id]);
   const none = await post({ q: "nobody-by-this-name" });
   expect("accounts page: a search with no match says so", rowIds(none.text).length === 0 && none.text.includes("No account matches"));
+  expect("accounts page: a search with no match offers to clear it, and the full list offers no such thing", none.text.includes('name="clear" value="1"') && !accountsPage.text.includes('name="clear"'));
+  const cleared = await post({ q: "nobody-by-this-name", clear: "1" });
+  expect("accounts page: clearing the search brings every account back", rowIds(cleared.text).length === 50 && cleared.text.includes(`1–50 of ${number(users.length)}`) && cleared.text.includes('name="q" value=""'));
+  const firstButton = /<form method="post" action="\/admin\/accounts">\s*<button([^>]*)>/.exec(accountsPage.text)?.[1] ?? "none";
+  expect("accounts page: Enter in the search box searches: the form's first button is not the download", !firstButton.includes("formaction") && accountsPage.text.indexOf(firstButton) < accountsPage.text.indexOf('formaction="/admin/accounts.csv"'), firstButton);
+  expect("accounts page: the search, the download and the pages sit inside the table's own frame", /<div class="sheet">\s*<div class="toolbar"><label class="search">/.test(accountsPage.text) && /<div class="toolbar foot pager"><span>1–50 of /.test(accountsPage.text));
   const wild = await post({ q: "%" });
   same("accounts page: a percent sign is searched for, not treated as a wildcard", rowIds(wild.text).length, 0);
   const inAddress = await call("GET", `/admin/accounts?q=${encodeURIComponent("evil.example")}`, { headers: admin });
@@ -471,6 +477,7 @@ try {
   const page = await call("GET", `/admin/accounts/${metered.id}`, { headers: admin });
   const total = now.get(metered.id);
   expect("account page: renders with the account's name", page.status === 200 && page.text.includes(`<bdi>${metered.email}</bdi>`), page.status);
+  expect("account page: the address and the identifier can be copied", page.text.includes(`data-copy="${metered.email}"`) && page.text.includes(`data-copy="${metered.id}"`));
   expect("account page: the title does not name the account", /<title>DoeDesk dashboard<\/title>/.test(page.text) && !page.text.split("</head>")[0].includes(metered.email));
   expect("account page: this month's characters, pages and requests", page.text.includes(`<div class="figure">${number(total.detect_characters)}</div>`) && page.text.includes(`<div class="figure">${number(total.ocr_pages)}</div>`) && page.text.includes(`<div class="figure">${number(requestsOf(total))}</div>`));
   expect("account page: estimated cost from engine units and pages", page.text.includes(`<div class="figure">$${costOf(total).toFixed(2)}</div>`), costOf(total));

@@ -543,6 +543,10 @@ const mustNotBeLogged = new Set();
       (await call("GET", "/admin/privacy", { headers: { cookie: `dd_admin=${Math.floor(Date.now() / 1000) - 10}.${signature}` } })).status,
       (await call("GET", "/admin/privacy", { headers: { cookie: `dd_admin=${sha256Hex(`admin-cookie:${service.adminKey}`)}` } })).status,
     ], [200, 401, 401, 401]);
+    const wrongKey = await call("POST", "/admin", form({ key: `${service.adminKey}x` }));
+    const keyPage = await call("GET", "/admin");
+    expect("dashboard: a wrong key sets no cookie, and the page says so in two words", wrongKey.status === 401 && wrongKey.headers.get("set-cookie") === null && wrongKey.text.includes('role="alert">Wrong key</p>') && wrongKey.text.includes('aria-invalid="true"'), wrongKey.text.slice(-300));
+    expect("dashboard: the page that asks for the key says nothing was wrong before a key was tried, and holds no address", keyPage.status === 401 && keyPage.text.includes('name="key"') && !keyPage.text.includes("Wrong key") && !keyPage.text.includes("@"), keyPage.text.slice(-300));
     const signOut = await call("POST", "/admin/sign-out", { headers: { cookie } });
     expect("dashboard: signing out drops the cookie", signOut.status === 303 && /dd_admin=;/.test(signOut.headers.get("set-cookie") ?? "") && /Max-Age=0\b/.test(signOut.headers.get("set-cookie") ?? ""), signOut.headers.get("set-cookie"));
     expect("dashboard: every page offers the sign-out", (await call("GET", "/admin", { headers: admin })).text.includes('action="/admin/sign-out"'));
@@ -561,10 +565,14 @@ const mustNotBeLogged = new Set();
     expect("mail: the dashboard shows how many are unread, on every page", overview.text.includes('>Mail<span class="badge">3</span></a>') && (await call("GET", "/admin/accounts", { headers: admin })).text.includes('>Mail<span class="badge">3</span></a>'), overview.text.match(/Mail[^<]*<[^>]+>[^<]*/)?.[0]);
     const inbox = await call("GET", "/admin/mail", { headers: admin });
     expect("mail: the list names each message and whether it was forwarded", inbox.status === 200 && inbox.text.includes("Please delete my account") && inbox.text.includes("3 unread") && inbox.text.includes(`/admin/mail/${received.id}`), inbox.text.slice(0, 300));
+    const stateOf = (page, mailId) => new RegExp(`<tr class="[^"]*" data-state="([^"]*)"><td class="who">(?:<i [^>]*></i>)?<a href="/admin/mail/${mailId}">`).exec(page)?.[1];
+    expect("mail: each row carries its state for the list's filter, which is offered with a box to type in", stateOf(inbox.text, received.id) === "unread open" && ["", "unread", "open", "closed"].every((state) => inbox.text.includes(`data-show="${state}"`)) && inbox.text.includes('aria-label="Filter mail"'), stateOf(inbox.text, received.id));
     const message = await call("GET", `/admin/mail/${received.id}`, { headers: admin });
     expect("mail: opening a message shows its text, decoded, and marks it read", message.status === 200 && message.text.includes("My address is writer@elsewhere.example ✓") && service.query("SELECT read_at FROM contact_mail WHERE id = ?", received.id)[0].read_at !== null && count("contact_mail WHERE read_at IS NULL") === 2, message.text.slice(0, 400));
     const closed = await adminPost("/admin/mail", { action: "close", id: received.id });
     expect("mail: the owner closes the matter, which starts the twelve months", closed.status === 303 && Math.abs(Date.parse(service.query("SELECT closed_at FROM contact_mail WHERE id = ?", received.id)[0].closed_at) - Date.now()) < 120_000);
+    same("mail: a closed message is marked closed in the list, and no longer unread or open", stateOf((await call("GET", "/admin/mail", { headers: admin })).text, received.id), "closed");
+    expect("mail: an opened message offers its sender's address to copy", message.text.includes('data-copy="writer@elsewhere.example"'));
     await adminPost("/admin/mail", { action: "read-all" });
     expect("mail: with nothing unread the count goes", count("contact_mail WHERE read_at IS NULL") === 0 && (await call("GET", "/admin", { headers: admin })).text.includes(">Mail</a>"));
     same("mail: an unknown message is not found", (await call("GET", "/admin/mail/nothing-here", { headers: admin })).status, 404);
@@ -573,9 +581,11 @@ const mustNotBeLogged = new Set();
     const privacyPage = await call("GET", "/admin/privacy", { headers: admin });
     const acceptedNow = service.query("SELECT COUNT(DISTINCT user_id) AS n FROM acceptances WHERE account_closed_at IS NULL AND user_id IN (SELECT id FROM users)")[0].n;
     expect("privacy page: counts who has accepted, and lists who has not", privacyPage.status === 200 && privacyPage.text.includes(`<h2>Terms accepted</h2><div class="figure">${acceptedNow}</div>`) && privacyPage.text.includes(`<h2>Not accepted</h2><div class="figure">${count("users") - acceptedNow}</div>`) && privacyPage.text.includes("stale@seeded.example") && !privacyPage.text.includes(">bystander@seeded.example<"), privacyPage.text.slice(0, 400));
-    expect("privacy page: says what is in force", privacyPage.text.includes("Recorded when sent; not required") && privacyPage.text.includes("1 mailbox") && privacyPage.text.includes("from 2026-11-25") && privacyPage.text.includes("Nowhere"));
+    expect("privacy page: says what is in force", privacyPage.text.includes("Recorded, not required") && privacyPage.text.includes("1 mailbox") && privacyPage.text.includes("from 2026-11-25") && privacyPage.text.includes("Nowhere"));
     const acceptedAccount = await call("GET", `/admin/accounts/${id("viewed")}`, { headers: admin });
     expect("account page: shows that an account has not accepted, with export and delete", acceptedAccount.status === 200 && acceptedAccount.text.includes("Not accepted") && acceptedAccount.text.includes('name="action" value="export"') && acceptedAccount.text.includes('name="action" value="delete"'), acceptedAccount.text.slice(0, 300));
+    expect("account page: deleting asks in a dialog that names the account and wants the word typed", acceptedAccount.text.includes('name="action" value="delete" data-confirm="Delete this account?" data-detail="viewed@seeded.example" data-word="DELETE"') && acceptedAccount.text.includes('<dialog id="confirm"'), acceptedAccount.text.match(/value="delete"[^>]*/)?.[0]);
+    expect("account page: the account's identifier and address can each be copied", acceptedAccount.text.includes(`data-copy="${id("viewed")}"`) && acceptedAccount.text.includes('data-copy="viewed@seeded.example"'));
     await call("POST", "/v1/me/acceptance", { body: { acceptance: ACCEPTANCE }, token: token("viewed") });
     expect("account page: shows the version accepted, and the record", (await call("GET", `/admin/accounts/${id("viewed")}`, { headers: admin })).text.match(/Accepted 1\.3 on \d+ \w+ \d{4}/) !== null);
 
@@ -596,7 +606,7 @@ const mustNotBeLogged = new Set();
     same("owner: both requests are in the log as handled by mail, and the repeat as not found", service.query("SELECT type, channel, outcome FROM rights_requests WHERE account_id = ? ORDER BY handled_at", byMail).map((row) => Object.values(row).join(" ")), ["access email done", "deletion email done", "deletion email not_found"]);
     await adminPost("/admin/rights", { action: "log", type: "correction", outcome: "refused" });
     const logged = await call("GET", "/admin/privacy", { headers: admin });
-    expect("owner: a request answered by hand can be added, and the page lists the log without any content", service.query("SELECT type, channel, outcome, account_id FROM rights_requests WHERE type = 'correction'").map((row) => Object.values(row).join(" ")).join() === "correction email refused " && logged.text.includes("<td>correction</td><td>Mail</td><td>refused</td>") && logged.text.includes(`<code>${byMail.slice(0, 8)}</code>`) && !logged.text.includes("by-mail@seeded.example"), logged.text.slice(0, 200));
+    expect("owner: a request answered by hand can be added, and the page lists the log without any content", service.query("SELECT type, channel, outcome, account_id FROM rights_requests WHERE type = 'correction'").map((row) => Object.values(row).join(" ")).join() === "correction email refused " && logged.text.includes('<td>correction</td><td>Mail</td><td class="keep"><i class="dot bad"></i>refused</td>') && logged.text.includes('aria-label="Filter requests"') && logged.text.includes(`<code>${byMail.slice(0, 8)}</code>`) && !logged.text.includes("by-mail@seeded.example"), logged.text.slice(0, 200));
     same("owner: an identifier that is not one is not found", (await adminPost("/admin/rights", { action: "export", account: "not-an-id" })).status, 404);
 
     // Usage data, by the installation identifier a person quotes.
@@ -654,7 +664,7 @@ const mustNotBeLogged = new Set();
     const beforeNight = snapshot();
     same("retention dry run: counts what tonight would delete, per rule", { sign_in_attempts: line("sign_in_attempts"), sessions: line("sessions"), accounts: line("accounts"), contact_mail: line("contact_mail"), acceptances: line("acceptances"), rights_requests: line("rights_requests"), deletion_receipts: line("deletion_receipts"), error_reports: line("error_reports"), usage_data: line("usage_data"), usage_data_choices: line("usage_data_choices"), test_mail: line("test_mail"), counters: line("rate_limit_counters") >= 1 }, { ...Object.fromEntries(Object.entries(expectDeleted).map(([name, list]) => [name, list.length])), usage_data: 1, usage_data_choices: 1, test_mail: 1, counters: true });
     expect("retention dry run: changes nothing, and is marked as not applied", report.applied === false && snapshot() === beforeNight && report.rules.every((item) => typeof item.kept === "string" && typeof item.what === "string"), report);
-    expect("retention: the privacy page shows the same table, with each period", (await call("GET", "/admin/privacy", { headers: admin })).text.includes("24 months without use") && privacyPage.text.includes("Would remove now"));
+    expect("retention: the privacy page shows the same table, with each period", (await call("GET", "/admin/privacy", { headers: admin })).text.includes("24 months without use") && privacyPage.text.includes("Due now"));
 
     const proofBefore = service.query("SELECT user_id, account_closed_at FROM acceptances WHERE user_id = ?", id("unused-past"))[0];
     const night = await call("GET", "/cdn-cgi/handler/scheduled");
@@ -678,7 +688,9 @@ const mustNotBeLogged = new Set();
     const secondReport = (await call("GET", "/admin/retention.json", { headers: admin })).json;
     expect("retention: running it again changes nothing, and the dry run then counts nothing", snapshot() === afterNight && secondReport.rules.every((item) => item.rows === 0 || item.id === "rate_limit_counters"), secondReport.rules.filter((item) => item.rows !== 0));
     const runNow = await adminPost("/admin/retention", { confirm: "RUN" });
-    same("retention: the owner can run it from the page, with the word; without it nothing runs", [runNow.status, runNow.text.includes("Removed just now"), (await adminPost("/admin/retention", { confirm: "" })).status], [200, true, 400]);
+    const unconfirmed = await adminPost("/admin/retention", { confirm: "" });
+    same("retention: the owner can run it from the page, with the word; without it nothing runs", [runNow.status, runNow.text.includes("Removed just now"), unconfirmed.status], [200, true, 400]);
+    expect("retention: without the word the page asks for it, and the page's button asks in a dialog", unconfirmed.text.includes('action="/admin/retention"') && unconfirmed.text.includes('placeholder="Type RUN"') && (await call("GET", "/admin/privacy", { headers: admin })).text.includes('data-confirm="Run retention now?" data-word="RUN"'), unconfirmed.text.slice(-400));
 
     // --- Nothing that names an account reaches the log ------------------------------------------
     const log = service.log();
@@ -795,8 +807,8 @@ const mustNotBeLogged = new Set();
     await sendMail("hello@doedesk.com", "Hello there");
     const kept = service.query("SELECT forwarded_at, forward_error FROM contact_mail")[0];
     const privacyPage = await call("GET", "/admin/privacy", { headers: admin });
-    expect("mail: with no mailbox set the message is kept, marked as not forwarded, and the dashboard says so", kept?.forwarded_at === null && kept.forward_error === "MAIL_FORWARD_TO is not set" && !service.log().includes("rcptTo:") && privacyPage.text.includes("Not set: mail is stored here only") && (await call("GET", "/admin/mail", { headers: admin })).text.includes("Forwarding is not set"), kept);
-    expect("privacy page: shows the switches in force", privacyPage.text.includes("Required to sign in and to use the service") && privacyPage.text.includes("IR, KP, UA-43 · EU, EEA and UK") && privacyPage.text.includes("Random only") && privacyPage.text.includes("Detection is refused for them"));
+    expect("mail: with no mailbox set the message is kept, marked as not forwarded, and the dashboard says so", kept?.forwarded_at === null && kept.forward_error === "MAIL_FORWARD_TO is not set" && !service.log().includes("rcptTo:") && privacyPage.text.includes('Set MAIL_FORWARD_TO.">Off</span>') && (await call("GET", "/admin/mail", { headers: admin })).text.includes("Forwarding off"), kept);
+    expect("privacy page: shows the switches in force", privacyPage.text.includes("Required for sign-in and use") && privacyPage.text.includes("IR, KP, UA-43 · EU, EEA and UK") && privacyPage.text.includes("Random only") && privacyPage.text.includes("Blocked until accepted"));
   } finally {
     await service.stop();
   }

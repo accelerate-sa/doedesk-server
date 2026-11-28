@@ -11,19 +11,8 @@
  */
 import { authenticate, changeRegion, publicAccount, saveProfile } from "./accounts.ts";
 import { adminDashboard } from "./admin.ts";
-import {
-  acceptTerms,
-  authOptions,
-  confirmLink,
-  createExtraSession,
-  jwks,
-  mintToken,
-  pollEmail,
-  signOut,
-  startEmail,
-  startPhone,
-  verifyPhone,
-} from "./auth.ts";
+import { acceptTerms, authOptions, confirmLink, createExtraSession, jwks, mintToken, pollEmail, signOut, startEmail, startPhone, verifyPhone } from "./auth.ts";
+import { contactPhoneConfig, revealContactPhone } from "./contact-phone.ts";
 import { detect } from "./detect.ts";
 import { ApiError, CORS_HEADERS, type Env, html, json, readJson } from "./http.ts";
 import { acceptanceStatus } from "./acceptance.ts";
@@ -149,6 +138,12 @@ const api = async (request: Request, env: Env, url: URL): Promise<Response> => {
 const site = async (request: Request, env: Env, url: URL): Promise<Response> => {
   if (url.hostname === "www.doedesk.com") {
     return Response.redirect(`https://doedesk.com${url.pathname}${url.search}`, 301);
+  }
+  if (url.pathname === "/contact/phone") {
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+    if (request.method === "GET") return contactPhoneConfig(env);
+    if (request.method === "POST") return revealContactPhone(request, env, url);
+    return json({ error: { code: "method_not_allowed", message: "Use GET or POST." } }, 405);
   }
   // One stable address per installer, so the site and the app never carry a version number.
   // `/download` itself is the download page (web/src/pages/download.astro), served below.

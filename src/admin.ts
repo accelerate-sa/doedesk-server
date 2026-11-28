@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Accelerate Technology Establishment
-import { dashboardPage, MAIL_BADGE } from "./dashboard.ts";
+import { MARK_SVG } from "./brand.ts";
+import { dashboardPage, FEEDBACK_BADGE, MAIL_BADGE } from "./dashboard.ts";
+import { feedbackCounts, feedbackViews } from "./feedback-views.ts";
 import { ApiError, type Env, html, json, timingSafeEqual, toHex } from "./http.ts";
 import { mailCounts } from "./mail.ts";
 import { privacyViews } from "./privacy-views.ts";
@@ -39,27 +41,48 @@ const isAdmin = async (request: Request, env: Env): Promise<boolean> => {
   return cookie !== undefined && (await cookieStands(env, cookie.slice(COOKIE.length + 1)));
 };
 
-const KEY_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>DoeDesk</title>
-<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px ui-sans-serif,system-ui,sans-serif;background:Canvas;color:CanvasText}
-form{display:flex;gap:.5rem}input{font:inherit;padding:.6rem .75rem;border:1px solid #8F8A7D;border-radius:10px;min-width:16rem;background:transparent;color:inherit}
-button{font:inherit;padding:.6rem 1rem;border:0;border-radius:10px;background:#96531F;color:#fff;cursor:pointer}</style></head>
-<body><form method="post" action="/admin"><input type="password" name="key" aria-label="Admin key" placeholder="Admin key" autofocus required><button>Open</button></form></body></html>`;
+/**
+ * The page that asks for the key. Its colours come from `light-dark()`, so the page holds no
+ * at-sign: a refused request is checked for carrying nobody's address, and this keeps that simple.
+ */
+const keyPage = (refused: boolean): string => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>DoeDesk</title><link rel="icon" href="https://doedesk.com/favicon.svg">
+<style>:root{color-scheme:light dark;--paper:light-dark(#f5f3ee,#121311);--card:light-dark(#fff,#1a1c19);--ink:light-dark(#171815,#eceae3);--muted:light-dark(#5c5e56,#a2a599);--border:light-dark(#ddd9cf,#2b2e29);--accent:light-dark(#96531f,#e2a674);--on-accent:light-dark(#fff,#1d1309);--bad:light-dark(#a11c12,#ff8b80)}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:1rem;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased}
+main{inline-size:min(22rem,100%);padding:1.5rem;border:1px solid var(--border);border-radius:.9rem;background:var(--card)}
+.brand{display:flex;align-items:center;gap:.5rem;margin-bottom:1.25rem;font-weight:600}.brand svg{width:1.5rem;height:1.5rem}
+form{display:flex;gap:.5rem}
+input,button{font:inherit;block-size:2.5rem;border-radius:.6rem}
+input{flex:1;min-width:0;padding:0 .75rem;border:1px solid var(--border);background:transparent;color:inherit;font-size:1rem}
+input::placeholder{color:var(--muted)}
+input[aria-invalid]{border-color:var(--bad)}
+button{flex:none;padding:0 1rem;border:0;background:var(--accent);color:var(--on-accent);font-size:.875rem;font-weight:500;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+p{margin:.6rem 0 0;font-size:.8125rem;color:var(--bad)}</style></head>
+<body><main><div class="brand">${MARK_SVG}<span>DoeDesk</span></div><form method="post" action="/admin"><input type="password" name="key" aria-label="Admin key" placeholder="Admin key" autocomplete="current-password" autofocus required${refused ? ' aria-invalid="true" aria-describedby="refused"' : ""}><button>Sign in</button></form>${refused ? '<p id="refused" role="alert">Wrong key</p>' : ""}</main></body></html>`;
 
 const setCookie = (value: string, maxAge: number): string => `${COOKIE}=${value}; Path=/admin; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
 
-/** Puts the count of unread mail beside "Mail" in the page's navigation. */
-const withMailBadge = async (env: Env, response: Response): Promise<Response> => {
+/** Puts the unread counts beside "Mail" and "Feedback" in the page's navigation. */
+const withNavBadges = async (env: Env, response: Response): Promise<Response> => {
   if (!(response.headers.get("content-type") ?? "").startsWith("text/html")) return response;
   const body = await response.text();
-  if (!body.includes(MAIL_BADGE)) return new Response(body, response);
-  const { unread } = await mailCounts(env);
-  return new Response(body.replaceAll(MAIL_BADGE, unread === 0 ? "" : `<span class="badge">${unread}</span>`), response);
+  const wantsMail = body.includes(MAIL_BADGE);
+  const wantsFeedback = body.includes(FEEDBACK_BADGE);
+  if (!wantsMail && !wantsFeedback) return new Response(body, response);
+  const [mail, feedback] = await Promise.all([
+    wantsMail ? mailCounts(env) : Promise.resolve({ unread: 0 }),
+    wantsFeedback ? feedbackCounts(env) : Promise.resolve({ unread: 0 }),
+  ]);
+  const updated = body
+    .replaceAll(MAIL_BADGE, mail.unread === 0 ? "" : `<span class="badge">${mail.unread}</span>`)
+    .replaceAll(FEEDBACK_BADGE, feedback.unread === 0 ? "" : `<span class="badge">${feedback.unread}</span>`);
+  return new Response(updated, response);
 };
 
 export const adminDashboard = async (request: Request, env: Env, url: URL): Promise<Response> => {
   if (request.method === "POST" && url.pathname === "/admin") {
     const key = String((await request.formData()).get("key") ?? "");
-    if (!timingSafeEqual(key, env.ADMIN_KEY)) return html(KEY_PAGE, 401);
+    if (!timingSafeEqual(key, env.ADMIN_KEY)) return html(keyPage(true), 401);
     const expires = Math.floor(Date.now() / 1000) + COOKIE_HOURS * 3600;
     return new Response(null, {
       status: 303,
@@ -71,7 +94,7 @@ export const adminDashboard = async (request: Request, env: Env, url: URL): Prom
     return new Response(null, { status: 303, headers: { location: "/admin", "set-cookie": setCookie("", 0) } });
   }
   if (!(await isAdmin(request, env))) {
-    if (url.pathname === "/admin") return html(KEY_PAGE, 401);
+    if (url.pathname === "/admin") return html(keyPage(false), 401);
     throw new ApiError(401, "unauthenticated", "Admin key required.");
   }
   if (url.pathname === "/admin/test-inbox") {
@@ -83,6 +106,11 @@ export const adminDashboard = async (request: Request, env: Env, url: URL): Prom
       .all<{ received_at: string; raw: string }>();
     return json({ messages: rows.results });
   }
-  const view = (await usageViews(request, env, url)) ?? (await privacyViews(request, env, url)) ?? (await extension().adminViews?.(request, env, url)) ?? html(await dashboardPage(env, url));
-  return withMailBadge(env, view);
+  const view =
+    (await usageViews(request, env, url)) ??
+    (await privacyViews(request, env, url)) ??
+    (await feedbackViews(request, env, url)) ??
+    (await extension().adminViews?.(request, env, url)) ??
+    html(await dashboardPage(env, url));
+  return withNavBadges(env, view);
 };

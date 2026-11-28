@@ -9,12 +9,15 @@
  */
 import { estimatedCostUsd, unitCosts, type UnitCosts } from "./cost.ts";
 import {
+  back,
   breakdown,
+  copyButton,
   type Count,
   dailyChart,
   dayLabel,
   dayOf,
   FIELD_LABELS,
+  icon,
   number,
   one,
   rows,
@@ -46,17 +49,6 @@ const CLIENT_LABELS: Record<string, string> = {
   site: "Site",
 };
 
-const ICON = {
-  download: '<path d="M12 4v11m0 0-4-4m4 4 4-4M5 19.5h14"/>',
-  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>',
-  previous: '<path d="m14.5 6-6 6 6 6"/>',
-  next: '<path d="m9.5 6 6 6-6 6"/>',
-  down: '<path d="M12 5v14m0 0-5-5m5 5 5-5"/>',
-  up: '<path d="M12 19V5m0 0-5 5m5-5 5 5"/>',
-} as const;
-const icon = (name: keyof typeof ICON): string =>
-  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`;
-
 const compact = (value: number): string =>
   new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 const usd = (value: number): string =>
@@ -76,7 +68,7 @@ const fieldLabel = (field: string | null, other: string | null): string =>
 const allowanceShare = (characters: number, pages: number, tokens: number): number =>
   Math.max(characters / MONTHLY_DETECT_CHARACTERS, pages / MONTHLY_OCR_PAGES, tokens / MONTHLY_WORKER_INPUT_TOKENS);
 const meterBar = (share: number): string =>
-  `<span class="meter"><i style="inline-size:${Math.min(100, share * 100).toFixed(1)}%"></i></span>`;
+  `<span class="meter${share >= 1 ? " over" : ""}"><i style="inline-size:${Math.min(100, share * 100).toFixed(1)}%"></i></span>`;
 
 // ---------------------------------------------------------------------------------------------
 // CSV
@@ -152,11 +144,11 @@ const COLUMNS: ReadonlyArray<Column> = [
   { id: "active", label: "Last active", order: "last_active", first: "desc" },
   { id: "characters", label: "Characters", order: "characters", first: "desc", numeric: true },
   { id: "pages", label: "Pages", order: "pages", first: "desc", numeric: true },
-  { id: "tokens", label: "Worker tokens", order: "tokens", first: "desc", numeric: true, title: "Tokens sent to the worker, as its answers counted them" },
+  { id: "tokens", label: "Worker tokens", order: "tokens", first: "desc", numeric: true, title: "Tokens sent to the worker" },
   { id: "requests", label: "Requests", order: "requests", first: "desc", numeric: true },
-  { id: "allowance", label: "Allowance", order: "allowance", first: "desc", numeric: true, title: "Share of the monthly allowance used, by characters, pages or worker tokens, whichever is highest" },
-  { id: "cost", label: "Est. cost", order: "cost", first: "desc", numeric: true, title: "What the engine and the worker cost for this account's use, estimated from the prices in the settings" },
-  { id: "days", label: "Days active", order: "active_days", first: "desc", numeric: true, title: "Days with a request, of the last 30" },
+  { id: "allowance", label: "Allowance", order: "allowance", first: "desc", numeric: true, title: "Highest of characters, pages and worker tokens" },
+  { id: "cost", label: "Est. cost", order: "cost", first: "desc", numeric: true, title: "From the prices in the settings" },
+  { id: "days", label: "Active days", order: "active_days", first: "desc", numeric: true, title: "Of the last 30" },
 ];
 const DEFAULT_SORT = "characters";
 
@@ -189,7 +181,9 @@ const tableState = (parameters: URLSearchParams, columns: ReadonlyArray<Column>)
           : "asc"
         : pressed.first;
   const page = pressed === undefined ? Math.max(1, Math.floor(Number(parameters.get("page")) || 1)) : 1;
-  return { search: (parameters.get("q") ?? "").trim().slice(0, MAX_SEARCH), sort, direction, page };
+  // The button an empty result offers sends `clear`, which drops the term.
+  const search = parameters.has("clear") ? "" : (parameters.get("q") ?? "").trim().slice(0, MAX_SEARCH);
+  return { search, sort, direction, page };
 };
 
 const likePattern = (term: string): string => `%${term.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
@@ -366,31 +360,36 @@ ${figure(row.active_days, number(row.active_days))}
   const first = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const last = Math.min(total, page * PAGE_SIZE);
   const step = (target: number, name: "previous" | "next", label: string): string =>
-    `<button class="icon-button" name="page" value="${target}" title="${label}" aria-label="${label}"${target < 1 || target > pages ? " disabled" : ""}>${icon(name)}</button>`;
+    `<button class="icon-button square" name="page" value="${target}" title="${label}" aria-label="${label}"${target < 1 || target > pages ? " disabled" : ""}>${icon(name)}</button>`;
 
+  // The first button of a form is the one Enter presses. Without this one, Enter in the search
+  // box would press the download.
   return shell(
     "accounts",
     "",
-    `<main><form method="post" action="/admin/accounts">
+    `<main><form method="post" action="/admin/accounts"><button class="sr" tabindex="-1" aria-hidden="true"></button>
 <input type="hidden" name="s" value="${state.sort.id}"><input type="hidden" name="d" value="${state.direction}">
-<div class="bar"><h1>Accounts<span class="count">${state.search === "" ? number(everyone) : `${number(total)} of ${number(everyone)}`}</span></h1>
-<label class="search">${icon("search")}<input type="search" name="q" value="${escapeHtml(state.search)}" placeholder="Email or phone" aria-label="Search accounts by email or phone" autocomplete="off" spellcheck="false"></label>
-<button class="icon-button" formaction="/admin/accounts.csv" title="Download as CSV" aria-label="Download as CSV">${icon("download")}<span>CSV</span></button></div>
+<div class="bar"><h1>Accounts<span class="count">${state.search === "" ? number(everyone) : `${number(total)} of ${number(everyone)}`}</span></h1></div>
 <div class="sorts" role="group" aria-label="Sort"><span>${shortMonth(month)}</span>${["characters", "pages", "tokens", "cost", "allowance", "active", "joined", "account"]
       .flatMap((id) => columns.filter((item) => item.id === id))
       .map((column) => {
         return `<button name="sort" value="${column.id}"${column === state.sort ? ' aria-pressed="true"' : ""}>${column.label}${column === state.sort ? icon(state.direction === "asc" ? "up" : "down") : ""}</button>`;
       })
       .join("")}</div>
+<div class="sheet">
+<div class="toolbar"><label class="search">${icon("search")}<input type="search" name="q" value="${escapeHtml(state.search)}" placeholder="Email or phone" aria-label="Search accounts by email or phone" aria-keyshortcuts="/" autocomplete="off" spellcheck="false"><kbd data-js hidden>/</kbd></label>
+<span class="spacer"></span>
+<button class="icon-button" formaction="/admin/accounts.csv" title="Download as CSV" aria-label="Download as CSV">${icon("download")}<span>CSV</span></button></div>
 ${
   list.length === 0
-    ? `<div class="sheet"><p class="empty none">No account matches</p></div>`
-    : `<div class="sheet"><table class="accounts">
+    ? `<div class="none"><p class="empty">No account matches</p>${state.search === "" ? "" : `<button class="icon-button" name="clear" value="1">${icon("close")}Clear</button>`}</div>`
+    : `<div class="fit"><table class="accounts">
 <thead><tr class="groups"><td colspan="6"></td><th colspan="${costs === null ? 5 : 6}" scope="colgroup">${monthLabel(month)}</th><th scope="colgroup" class="num">30 days</th></tr>
 <tr>${columns.map(heading).join("")}</tr></thead>
 <tbody>${body}</tbody></table></div>`
 }
-<div class="pager"><span>${number(first)}–${number(last)} of ${number(total)}</span>${step(page - 1, "previous", "Previous page")}${step(page + 1, "next", "Next page")}</div>
+<div class="toolbar foot pager"><span>${number(first)}–${number(last)} of ${number(total)}</span>${step(page - 1, "previous", "Previous page")}${step(page + 1, "next", "Next page")}</div>
+</div>
 </form></main>`,
   );
 };
@@ -492,17 +491,19 @@ const accountPage = async (env: Env, id: string): Promise<string | null> => {
     "accounts",
     "",
     `<main>
-<a class="back" href="/admin/accounts">${icon("previous")}Accounts</a>
-<div class="bar"><h1><bdi>${escapeHtml(user.email ?? user.phone ?? user.id)}</bdi></h1>
+${back("/admin/accounts", "Accounts")}
+<div class="bar"><h1><bdi>${escapeHtml(user.email ?? user.phone ?? user.id)}</bdi>${user.email === null && user.phone === null ? "" : copyButton(user.email ?? user.phone ?? "")}</h1>
 <a class="icon-button" href="/admin/accounts/${user.id}.csv" title="Download daily rows as CSV" aria-label="Download daily rows as CSV">${icon("download")}<span>CSV</span></a></div>
-<dl class="meta">${fact("Field", escapeHtml(fieldLabel(user.field, user.field_other)))}${fact("Workplace", escapeHtml(user.workplace === null ? "" : (WORKPLACE_LABELS[user.workplace] ?? user.workplace)))}${fact("Country", escapeHtml(user.country ?? ""))}${fact("Sign-in", user.signup_method === "phone" ? "Phone" : "Email")}${fact("Joined", dateLabel(user.created_at))}${fact("Last active", dateLabel(lastActive))}</dl>
+<dl class="meta">${fact("Field", escapeHtml(fieldLabel(user.field, user.field_other)))}${fact("Workplace", escapeHtml(user.workplace === null ? "" : (WORKPLACE_LABELS[user.workplace] ?? user.workplace)))}${fact("Country", escapeHtml(user.country ?? ""))}${fact("Sign-in", user.signup_method === "phone" ? "Phone" : "Email")}${fact("Joined", dateLabel(user.created_at))}${fact("Last active", dateLabel(lastActive))}${fact("ID", `<code title="${user.id}">${user.id.slice(0, 8)}</code>${copyButton(user.id, "Copy ID")}`)}</dl>
 <div class="grid compact">
 <h3 class="scope">${monthLabel(month)}</h3>
+<div class="kpis">
 ${tile("Characters", number(now.detect_characters), `${percent(now.detect_characters / MONTHLY_DETECT_CHARACTERS)} of ${number(MONTHLY_DETECT_CHARACTERS)}`, now.detect_characters / MONTHLY_DETECT_CHARACTERS)}
 ${tile("Pages", number(now.ocr_pages), `${percent(now.ocr_pages / MONTHLY_OCR_PAGES)} of ${number(MONTHLY_OCR_PAGES)}`, now.ocr_pages / MONTHLY_OCR_PAGES)}
 ${tile("Worker tokens", number(now.worker_input_tokens), `${percent(now.worker_input_tokens / MONTHLY_WORKER_INPUT_TOKENS)} of ${number(MONTHLY_WORKER_INPUT_TOKENS)} · ${number(now.worker_output_tokens)} answered`, now.worker_input_tokens / MONTHLY_WORKER_INPUT_TOKENS)}
 ${tile("Requests", number(requestsOf(now)), `${number(now.detect_requests)} text · ${number(now.ocr_files)} files · ${number(now.worker_requests)} worker`)}
 ${costs === null ? "" : tile("Est. cost", usd(costOf(now, costs)), `${number(now.detect_records)} engine units · ${number(now.ocr_pages)} pages · ${number(now.worker_input_tokens + now.worker_output_tokens)} worker tokens`)}
+</div>
 <h3 class="scope">Last 90 days</h3>
 ${dailyChart("Characters", days, series("characters")).replace('class="card chart"', 'class="card chart third"')}
 ${dailyChart("Pages", days, series("pages")).replace('class="card chart"', 'class="card chart third"')}
@@ -520,12 +521,12 @@ ${breakdown("Clients", clientCounts, CLIENT_LABELS)
           )
           .join("")}</tbody></table></details></section>`,
   )}
-<section class="card wide"><h2>Refused and failed</h2><table><thead><tr><td></td><th class="num">Allowance used up</th><th class="num">Too large</th><th class="num">Failed</th><th class="num" title="Answers the worker gave from a region other than the expected one">Off region</th></tr></thead><tbody>
+<section class="card wide"><h2>Refused and failed</h2><table><thead><tr><td></td><th class="num">Over allowance</th><th class="num">Too large</th><th class="num">Failed</th><th class="num" title="Answered from another region">Off region</th></tr></thead><tbody>
 <tr><th scope="row">Text</th><td class="num">${number(recent.detect_refused)}</td><td class="num">${number(recent.detect_too_large)}</td><td class="num">${number(recent.detect_failed)}</td><td></td></tr>
 <tr><th scope="row">Files</th><td class="num">${number(recent.ocr_refused)}</td><td class="num">${number(recent.ocr_too_large)}</td><td class="num">${number(recent.ocr_failed)}</td><td></td></tr>
 <tr><th scope="row">Worker</th><td class="num">${number(recent.worker_refused)}</td><td class="num">${number(recent.worker_too_large)}</td><td class="num">${number(recent.worker_failed)}</td><td class="num">${number(recent.worker_off_region)}</td></tr>
 </tbody></table></section>
-<h3 class="scope">Terms and rights</h3>
+<h3 class="scope">Terms and data</h3>
 ${privacyCard}
 <h3 class="scope">By month</h3>
 <section class="card full">${
@@ -635,6 +636,7 @@ const distributionPage = async (env: Env, url: URL): Promise<string> => {
     "distribution",
     `<nav class="periods" aria-label="Month">${[thisMonth, lastMonth].map((value) => `<a href="/admin/distribution?month=${value}"${value === month ? ' aria-current="true"' : ""}>${shortMonth(value)}</a>`).join("")}</nav>`,
     `<main class="grid compact">
+<div class="kpis">
 ${tile("Active accounts", number(active.length), `of ${number(everyone.length)}`)}
 ${
   costs === null
@@ -642,16 +644,17 @@ ${
     : `${tile("Est. cost", usd(totalCost), `${number(sum(active, "units"))} engine units · ${number(sum(active, "pages"))} pages · ${number(sum(active, "tokens") + sum(active, "outputTokens"))} worker tokens`)}
 ${tile("Cost per active account", usd(active.length === 0 ? 0 : totalCost / active.length), `median ${usd(percentile(costValues, 0.5))} · highest ${usd(percentile(costValues, 1))}`)}`
 }
-${tile("At the allowance", number(atAllowance), `${number(pastHalf)} past half of it`)}
-<section class="card wide"><h2>Per active account</h2><table><thead><tr><td></td><th class="num">Characters</th><th class="num">Pages</th><th class="num">Requests</th><th class="num">Worker tokens</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>
+${tile("At the allowance", number(atAllowance), `${number(pastHalf)} past half`)}
+</div>
+<section class="card wide"><h2>Per active account</h2><div class="fit"><table><thead><tr><td></td><th class="num">Characters</th><th class="num">Pages</th><th class="num">Requests</th><th class="num">Worker tokens</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>
 ${spread("Median", 0.5)}${spread("75th percentile", 0.75)}${spread("90th", 0.9)}${spread("99th", 0.99)}${spread("Highest", 1)}
-</tbody></table></section>
-<section class="card wide"><h2>Share from the heaviest accounts</h2><table><thead><tr><td></td><th class="num">Characters</th><th class="num">Pages</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>
+</tbody></table></div></section>
+<section class="card wide"><h2>Share of the top accounts</h2><table><thead><tr><td></td><th class="num">Characters</th><th class="num">Pages</th>${costs === null ? "" : '<th class="num">Est. cost</th>'}</tr></thead><tbody>
 ${top("Top 1", 1)}${top("Top 5", 5)}${top("Top 10", 10)}${top(`Top tenth (${number(tenth)})`, tenth)}
 </tbody></table></section>
 ${breakdown("Accounts by characters", bands("characters", CHARACTER_BANDS)).replace('class="card"', 'class="card wide"')}
 ${breakdown("Accounts by pages", bands("pages", PAGE_BANDS)).replace('class="card"', 'class="card wide"')}
-<section class="card full"><h2>By field</h2><div class="fit"><table><thead><tr><th>Field</th><th class="num wide-only">Accounts</th><th class="num">Active</th><th class="num" title="Median across the field's active accounts">Median characters</th><th class="num wide-only">90th</th><th class="num" title="Median across the field's active accounts">Median pages</th><th class="num wide-only">90th</th>${costs === null ? "" : '<th class="num" title="Average estimated cost per active account">Average cost</th>'}</tr></thead><tbody>${fields
+<section class="card full"><h2>By field</h2><div class="fit"><table><thead><tr><th>Field</th><th class="num wide-only">Accounts</th><th class="num">Active</th><th class="num" title="Active accounts">Median characters</th><th class="num wide-only">90th</th><th class="num" title="Active accounts">Median pages</th><th class="num wide-only">90th</th>${costs === null ? "" : '<th class="num" title="Per active account">Average cost</th>'}</tr></thead><tbody>${fields
       .map(({ field, all, used }) => {
         const characters = sorted(used, "characters");
         const pages = sorted(used, "pages");
@@ -668,7 +671,7 @@ ${breakdown("Accounts by pages", bands("pages", PAGE_BANDS)).replace('class="car
 const ACCOUNT_PATH = /^\/admin\/accounts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\.csv)?$/;
 
 const notFound = (): Response =>
-  html(shell("accounts", "", `<main><a class="back" href="/admin/accounts">${icon("previous")}Accounts</a><p class="empty">No such account</p></main>`), 404);
+  html(shell("accounts", "", `<main>${back("/admin/accounts", "Accounts")}<div class="sheet"><div class="none"><p class="empty">No such account</p></div></div></main>`), 404);
 
 /** Answers the usage views, or null when the address is not one of them. */
 export const usageViews = async (request: Request, env: Env, url: URL): Promise<Response | null> => {

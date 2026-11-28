@@ -162,6 +162,13 @@ const rules = (env: Env, now: Date): ReadonlyArray<Rule> => {
       apply: batch([db.prepare("DELETE FROM crash_reports WHERE day < ?").bind(errorReportsBefore)]),
     },
     {
+      id: "agent_feedback",
+      what: "Anonymous agent feedback reports",
+      kept: `${USAGE_DATA_DAYS} days`,
+      count: db.prepare("SELECT COUNT(*) AS n FROM agent_feedback WHERE day < ?").bind(usageDataBefore),
+      apply: batch([db.prepare("DELETE FROM agent_feedback WHERE day < ?").bind(usageDataBefore)]),
+    },
+    {
       id: "contact_mail",
       what: "Messages sent to the contact addresses",
       kept: `${CONTACT_MAIL_MONTHS_AFTER_CLOSED} months after the matter is closed (closed automatically ${CONTACT_MAIL_AUTO_CLOSE_DAYS} days after arrival)`,

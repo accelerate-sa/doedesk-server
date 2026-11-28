@@ -14,6 +14,8 @@ import { usageDataRule } from "./regions.ts";
 const CLIENT_KEY = "doedesk-client";
 const MAX_BATCH = 100;
 const MAX_PROPERTIES_BYTES = 8_000;
+const MAX_FEEDBACK_TRACE_BYTES = 48_000;
+const MAX_FEEDBACK_TEXT = 1_000;
 
 /** A random UUID: the identifier the app makes for an installation (consent-spec 11.5). */
 const RANDOM_IDENTIFIER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -51,6 +53,64 @@ const PROPERTIES_NOT_STORED = new Set([
 
 const stringProperty = (properties: Record<string, unknown>, key: string, max = 64): string | null =>
   text(properties[key], max);
+
+const AGENT_FEEDBACK_FIELDS = new Set(["kind", "subject", "expected", "actual", "workaround", "trace", "userRequested", "source"]);
+
+const feedbackStatement = (
+  env: Env,
+  uuid: string,
+  sent: Record<string, unknown>,
+  at: string,
+  receivedAt: string,
+  country: string | null,
+): D1PreparedStatement | null => {
+  const kind = stringProperty(sent, "kind", 64);
+  const subject = stringProperty(sent, "subject", 160);
+  if (kind === null || subject === null) return null;
+
+  const userRequested = sent.userRequested === true ? 1 : 0;
+  const source = sent.source === "mcp" || sent.source === "cli" ? sent.source : null;
+  const expected = userRequested === 1 ? text(sent.expected, MAX_FEEDBACK_TEXT) : null;
+  const actual = userRequested === 1 ? text(sent.actual, MAX_FEEDBACK_TEXT) : null;
+  const workaround = userRequested === 1 ? text(sent.workaround, MAX_FEEDBACK_TEXT) : null;
+
+  let traceJson: string | null = null;
+  if (sent.trace !== null && sent.trace !== undefined && typeof sent.trace === "object") {
+    const encoded = JSON.stringify(sent.trace);
+    if (encoded.length <= MAX_FEEDBACK_TRACE_BYTES) traceJson = encoded;
+    else return null;
+  }
+
+  const properties: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(sent)) {
+    if (!PROPERTIES_NOT_STORED.has(key) && !AGENT_FEEDBACK_FIELDS.has(key)) properties[key] = value;
+  }
+  const serialized = JSON.stringify(properties);
+  if (serialized.length > MAX_PROPERTIES_BYTES) return null;
+
+  return env.DB.prepare(
+    "INSERT INTO agent_feedback (id, received_at, day, at, country, app_version, kind, subject, user_requested, source, provider, model, expected, actual, workaround, trace, properties) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
+  ).bind(
+    uuid,
+    receivedAt,
+    at.slice(0, 10),
+    at,
+    country,
+    stringProperty(properties, "t3CodeVersion") ?? stringProperty(properties, "appVersion"),
+    kind,
+    subject,
+    userRequested,
+    source,
+    stringProperty(properties, "provider", 64),
+    stringProperty(properties, "model", 120),
+    expected,
+    actual,
+    workaround,
+    traceJson,
+    serialized,
+  );
+};
 
 /** The identifier an event is stored under, or null when it has none the service accepts. */
 const installationOf = (env: Env, properties: Record<string, unknown>): string | null => {
@@ -102,6 +162,16 @@ export const ingestBatch = async (request: Request, env: Env): Promise<Response>
     if (uuid === null || event === null || EVENTS_NOT_STORED.has(event)) continue;
     const sent =
       item.properties !== null && typeof item.properties === "object" ? (item.properties as Record<string, unknown>) : {};
+    const parsed = typeof item.timestamp === "string" ? Date.parse(item.timestamp) : Number.NaN;
+    const at = Number.isNaN(parsed) ? receivedAt : new Date(parsed).toISOString();
+    // Agent feedback is intentionally sent anonymously without installId or consent stamp, and
+    // is explicitly enabled by the user in Settings > Labs. Store in its own table so usage events
+    // keep their installation-identifier invariants.
+    if (event === "agent.feedback") {
+      const statement = feedbackStatement(env, uuid, sent, at, receivedAt, place.country);
+      if (statement !== null) statements.push(statement);
+      continue;
+    }
     const installation = installationOf(env, sent);
     if (installation === null) continue;
     const consent = consentOf(sent.consent ?? item.consent);
@@ -112,8 +182,6 @@ export const ingestBatch = async (request: Request, env: Env): Promise<Response>
     else properties.consent = consent;
     const serialized = JSON.stringify(properties);
     if (serialized.length > MAX_PROPERTIES_BYTES) continue;
-    const parsed = typeof item.timestamp === "string" ? Date.parse(item.timestamp) : Number.NaN;
-    const at = Number.isNaN(parsed) ? receivedAt : new Date(parsed).toISOString();
     statements.push(
       env.DB.prepare(
         // `distinct_id` is the installation identifier again: the column predates this rule and may not be empty.

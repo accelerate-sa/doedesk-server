@@ -10,7 +10,7 @@
  * not record it.
  */
 import { acceptanceStatus } from "./acceptance.ts";
-import { dayLabel, number, one, rows, shell } from "./dashboard.ts";
+import { back, copyButton, dayLabel, dot, filterBox, hint, icon, number, one, rows, shell } from "./dashboard.ts";
 import { type Env, escapeHtml, html, json, monthsBefore, nowIso } from "./http.ts";
 import { acceptanceRule, compareVersions, LEGAL } from "./legal.ts";
 import { forwardAddresses, mailCounts } from "./mail.ts";
@@ -48,8 +48,7 @@ const download = (name: string, body: unknown): Response =>
     },
   });
 const seeOther = (location: string): Response => new Response(null, { status: 303, headers: { location } });
-const page = (section: "privacy" | "mail", main: string, status = 200): Response => html(shell(section, "", main), status);
-const back = (href: string, label: string): string => `<a class="back" href="${href}">‹ ${label}</a>`;
+const page = (section: "privacy" | "mail" | "accounts", main: string, status = 200): Response => html(shell(section, "", main), status);
 
 // ---------------------------------------------------------------------------------------------
 // The card on an account's page
@@ -65,9 +64,10 @@ export const accountPrivacyCard = async (env: Env, accountId: string): Promise<s
     ),
   ]);
   const state = status.outstanding
-    ? `<span class="warn">Not accepted</span>${status.termsVersion === null ? "" : ` · last accepted ${escapeHtml(status.termsVersion)}`}`
-    : `Accepted ${escapeHtml(status.termsVersion ?? "")} on ${day(status.acceptedAt ?? "")}`;
-  return `<section class="card wide"><h2>Terms of Use<span class="total">${LEGAL.terms.required} required</span></h2>
+    ? `${dot("bad")}<span class="warn">Not accepted</span>${status.termsVersion === null ? "" : ` · last ${escapeHtml(status.termsVersion)}`}`
+    : `${dot("good")}Accepted ${escapeHtml(status.termsVersion ?? "")} on ${day(status.acceptedAt ?? "")}`;
+  const label = await env.DB.prepare("SELECT COALESCE(email, phone, id) AS label FROM users WHERE id = ?").bind(accountId).first<{ label: string }>();
+  return `<section class="card wide"><h2>Terms ${LEGAL.terms.required}</h2>
 <p class="state">${state}</p>
 ${
   history.length === 0
@@ -80,16 +80,15 @@ ${
         .join("")}</tbody></table></details>`
 }
 <form method="post" action="/admin/rights" class="row actions"><input type="hidden" name="account" value="${accountId}">
-<button class="icon-button" name="action" value="export" title="Download everything held about this account, and log the request">Export</button>
-<button class="icon-button danger" name="action" value="delete">Delete account…</button></form>
-<p class="note">For a request that came by mail. Both are written to the log of requests.</p></section>`;
+<button class="icon-button" name="action" value="export" title="Download this account's data">${icon("download")}Export</button>
+<button class="icon-button danger" name="action" value="delete" data-confirm="Delete this account?" data-detail="${escapeHtml(label?.label ?? "")}" data-word="DELETE" data-yes="Delete">${icon("trash")}Delete</button></form></section>`;
 };
 
 // ---------------------------------------------------------------------------------------------
 // Privacy: acceptance, requests, usage data by identifier, retention
 
 const retentionTable = (report: RetentionReport): string =>
-  `<table><thead><tr><th>What</th><th>Kept</th><th class="num">${report.applied ? "Removed" : "Would remove now"}</th></tr></thead><tbody>${report.rules
+  `<table><thead><tr><th>What</th><th>Kept</th><th class="num">${report.applied ? "Removed" : "Due now"}</th></tr></thead><tbody>${report.rules
     .map(
       (line) =>
         `<tr><td>${escapeHtml(line.what)}</td><td>${escapeHtml(line.kept)}</td><td class="num${line.rows === 0 ? " zero" : ""}">${line.error === undefined ? number(line.rows) : `<span class="warn">Failed: ${escapeHtml(line.error)}</span>`}</td></tr>`,
@@ -129,13 +128,14 @@ const privacyPage = async (env: Env): Promise<string> => {
   const forwarding = forwardAddresses(env).length;
   const blocked = blockedPlaces(env);
   const setting = (name: string, value: string): string => `<tr><th scope="row">${name}</th><td>${value}</td></tr>`;
+  const OUTCOME_TONE: Record<string, "good" | "bad" | "muted"> = { done: "good", refused: "bad", not_found: "muted" };
 
   return `<main class="grid compact">
-${tile("Terms accepted", number(acceptedCount), `of ${number(accounts)} accounts · version ${LEGAL.terms.required}`)}
-${tile("Not accepted", number(accounts - acceptedCount), rule === "all" ? "Detection is refused for them" : rule === "signup" ? "Required at sign-in" : "Recorded, not required")}
-${tile("Requests, last month", number(recentRequests), "Access, deletion and others")}
+${tile("Terms accepted", number(acceptedCount), `of ${number(accounts)} · ${LEGAL.terms.required}`)}
+${tile("Not accepted", number(accounts - acceptedCount), rule === "all" ? "Blocked until accepted" : rule === "signup" ? "Asked at sign-in" : "Not required")}
+${tile("Requests", number(recentRequests), "Past month")}
 ${tile("Usage-data choices", number(choice("on_consented") + choice("on_by_default_notice_shown") + choice("off")), `${number(choice("on_consented"))} agreed · ${number(choice("on_by_default_notice_shown"))} notice · ${number(choice("off"))} off`)}
-<section class="card wide"><h2>Accounts that have not accepted<span class="total">${number(waiting.length)}</span></h2>${
+<section class="card wide" data-filter><div class="head"><h2>Not accepted<span class="total">${number(waiting.length)}</span></h2>${waiting.length === 0 ? "" : filterBox("Filter accounts")}</div>${
     waiting.length === 0
       ? `<p class="empty">None</p>`
       : `<div class="scroll tall"><table><thead><tr><th>Account</th><th>Joined</th><th class="wide-only">Last accepted</th></tr></thead><tbody>${waiting
@@ -144,62 +144,71 @@ ${tile("Usage-data choices", number(choice("on_consented") + choice("on_by_defau
             (row) =>
               `<tr><td><a href="/admin/accounts/${row.id}"><bdi>${escapeHtml(row.label)}</bdi></a></td><td class="nowrap">${day(row.created_at)}</td><td class="wide-only">${escapeHtml(row.version ?? "Never")}</td></tr>`,
           )
-          .join("")}</tbody></table></div>`
+          .join("")}</tbody></table></div><p class="empty" data-none hidden>No match</p>`
   }</section>
-<section class="card wide"><h2>In force</h2><table><tbody>
-${setting("Terms and Privacy Policy", `${LEGAL.terms.version} and ${LEGAL.privacy.version}${LEGAL.terms.effective === null ? ` · <span class="warn">no effective date set</span>` : ` · from ${LEGAL.terms.effective}`}`)}
-${setting("Acceptance", rule === "off" ? "Recorded when sent; not required" : rule === "signup" ? "Required to sign in" : "Required to sign in and to use the service")}
-${setting("Mail forwarding", forwarding === 0 ? `<span class="warn">Not set: mail is stored here only</span>` : `${number(forwarding)} mailbox${forwarding === 1 ? "" : "es"}${mail.notForwarded > 0 ? ` · <span class="warn">${number(mail.notForwarded)} not forwarded</span>` : ""}`)}
-${setting("New accounts refused from", `${blocked.length === 0 ? "Nowhere" : escapeHtml(blocked.join(", "))}${env.SIGNUP_BLOCK_EU_UK === "1" ? " · EU, EEA and UK" : ""}`)}
-${setting("Usage-data identifiers", env.USAGE_DATA_RANDOM_IDENTIFIERS_ONLY === "1" ? "Random only" : "Random, and the form apps up to 0.1.x send")}
+<section class="card wide"><div class="head"><h2>In force</h2></div><table><tbody>
+${setting("Terms · Privacy", `${LEGAL.terms.version} · ${LEGAL.privacy.version}${LEGAL.terms.effective === null ? ` · <span class="warn">no effective date</span>` : ` · from ${LEGAL.terms.effective}`}`)}
+${setting("Acceptance", rule === "off" ? "Recorded, not required" : rule === "signup" ? "Required at sign-in" : "Required for sign-in and use")}
+${setting("Mail forwarding", forwarding === 0 ? FORWARDING_OFF : `${number(forwarding)} mailbox${forwarding === 1 ? "" : "es"}${mail.notForwarded > 0 ? ` · <span class="warn">${number(mail.notForwarded)} not forwarded</span>` : ""}`)}
+${setting("Sign-up blocked", `${blocked.length === 0 ? "Nowhere" : escapeHtml(blocked.join(", "))}${env.SIGNUP_BLOCK_EU_UK === "1" ? " · EU, EEA and UK" : ""}`)}
+${setting("Usage-data IDs", env.USAGE_DATA_RANDOM_IDENTIFIERS_ONLY === "1" ? "Random only" : "Random and legacy")}
 </tbody></table></section>
-<section class="card wide"><h2>Requests handled</h2>${
+<section class="card wide" data-filter><div class="head"><h2>Requests<span class="total">${number(requests.length)}</span></h2>${requests.length === 0 ? "" : filterBox("Filter requests")}</div>${
     requests.length === 0
       ? `<p class="empty">None yet</p>`
       : `<div class="scroll tall"><table><thead><tr><th>When</th><th>Request</th><th>From</th><th>Outcome</th><th class="wide-only">Account</th></tr></thead><tbody>${requests
           .map(
             (row) =>
-              `<tr><td class="nowrap">${when(row.handled_at)}</td><td>${escapeHtml(words(row.type))}</td><td>${row.channel === "app" ? "The app" : "Mail"}</td><td>${escapeHtml(words(row.outcome))}</td><td class="wide-only"><code>${escapeHtml(row.account_id?.slice(0, 8) ?? "")}</code></td></tr>`,
+              `<tr><td class="nowrap">${when(row.handled_at)}</td><td>${escapeHtml(words(row.type))}</td><td>${row.channel === "app" ? "App" : "Mail"}</td><td class="keep">${dot(OUTCOME_TONE[row.outcome] ?? "muted")}${escapeHtml(words(row.outcome))}</td><td class="wide-only"><code>${escapeHtml(row.account_id?.slice(0, 8) ?? "")}</code></td></tr>`,
           )
-          .join("")}</tbody></table></div>`
+          .join("")}</tbody></table></div><p class="empty" data-none hidden>No match</p>`
   }
 <form method="post" action="/admin/rights" class="row actions"><input type="hidden" name="action" value="log">
 <select class="field" name="type" aria-label="Request">${RIGHTS_TYPES.map((type) => `<option value="${type}">${words(type)}</option>`).join("")}</select>
 <select class="field" name="outcome" aria-label="Outcome">${RIGHTS_OUTCOMES.map((outcome) => `<option value="${outcome}">${words(outcome)}</option>`).join("")}</select>
-<button class="icon-button">Add to the log</button></form>
-<p class="note">For a request answered by hand. Export and deletion from an account's page are logged by themselves.</p></section>
-<section class="card wide"><h2>Usage data by installation identifier</h2>
-<form method="post" action="/admin/rights" class="row actions">
-<input class="field grow" name="installation" placeholder="Identifier from Settings" aria-label="Installation identifier" autocomplete="off" spellcheck="false" required>
-<button class="icon-button" name="action" value="usage-export">Export</button>
-<button class="icon-button danger" name="action" value="usage-delete">Delete…</button></form>
-<p class="note">Usage data is not tied to an account. The person quotes the identifier shown in the app's Settings.</p></section>
-<section class="card full"><h2>Kept and deleted<span class="total">Nightly, 03:17 UTC</span></h2>
-<div class="fit">${retentionTable(report)}</div>
-<form method="post" action="/admin/retention" class="row actions"><input class="field" name="confirm" placeholder="Type RUN" aria-label="Type RUN to confirm" autocomplete="off" required>
-<button class="icon-button danger">Run now</button></form></section>
+<button class="icon-button" title="Log a request answered by hand">${icon("plus")}Log</button></form></section>
+<section class="card wide"><div class="head"><h2>Usage data</h2>${hint("Not tied to an account. The ID is in the app's Settings.")}</div>
+<form method="post" action="/admin/rights" class="row">
+<input class="field grow" name="installation" placeholder="Installation ID" aria-label="Installation ID" autocomplete="off" spellcheck="false" required>
+<button class="icon-button" name="action" value="usage-export">${icon("download")}Export</button>
+<button class="icon-button danger" name="action" value="usage-delete">${icon("trash")}Delete</button></form></section>
+<section class="card full"><div class="head"><h2>Retention<span class="total">Nightly, 03:17 UTC</span></h2>
+<form method="post" action="/admin/retention" class="out"><button class="icon-button danger" data-confirm="Run retention now?" data-word="RUN" data-yes="Run">${icon("play")}Run now</button></form></div>
+<div class="fit">${retentionTable(report)}</div></section>
 </main>`;
 };
 
-const confirmPage = (title: string, lines: ReadonlyArray<string>, hidden: Record<string, string>, backTo: string): Response =>
+/** A message on a page of its own, in the shape of the dialog: a question to confirm, or what came of an action. */
+const dialogPage = (tone: "ask" | "done" | "failed", title: string, lines: ReadonlyArray<string>, rest: string, backTo: readonly [string, string], status = 200): Response =>
   page(
-    "privacy",
-    `<main>${back(backTo, "Back")}<section class="card narrow"><h1>${title}</h1>
-<ul class="plain">${lines.map((line) => `<li>${line}</li>`).join("")}</ul>
-<form method="post" action="/admin/rights" class="row actions">${Object.entries(hidden)
+    backTo[0].startsWith("/admin/accounts") ? "accounts" : "privacy",
+    `<main class="modal">${back(backTo[0], backTo[1])}<section class="dialog"${tone === "ask" ? ' role="alertdialog" aria-labelledby="ask"' : ""}><h1 id="ask">${icon(tone === "done" ? "check" : "alert").replace("<svg", `<svg class="${tone === "done" ? "good" : "bad"}"`)}<span>${title}</span></h1>${lines.map((line) => `<p class="detail">${line}</p>`).join("")}${rest}</section></main>`,
+    status,
+  );
+
+/** Asks for the word before something is deleted or run: what the dialog asks, for a browser without the script. */
+const confirmPage = (
+  title: string,
+  lines: ReadonlyArray<string>,
+  hidden: Record<string, string>,
+  backTo: string,
+  ask: { readonly action: string; readonly word: string; readonly yes: string; readonly status?: number } = { action: "/admin/rights", word: "DELETE", yes: "Delete" },
+): Response =>
+  dialogPage(
+    "ask",
+    title,
+    lines,
+    `<form method="post" action="${ask.action}">${Object.entries(hidden)
       .map(([name, value]) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`)
       .join("")}
-<input class="field" name="confirm" placeholder="Type DELETE" aria-label="Type DELETE to confirm" autocomplete="off" required autofocus>
-<button class="icon-button danger">Delete for good</button></form>
-<p class="note">This cannot be undone.</p></section></main>`,
+<input class="field" name="confirm" placeholder="Type ${ask.word}" aria-label="Type ${ask.word} to confirm" data-word="${ask.word}" autocomplete="off" autocapitalize="characters" spellcheck="false" required autofocus>
+<div class="row end"><a class="icon-button" href="${backTo}">Cancel</a><button class="icon-button danger solid">${ask.yes}</button></div></form>`,
+    [backTo, "Back"],
+    ask.status,
   );
 
 const resultPage = (title: string, lines: ReadonlyArray<string>, status = 200): Response =>
-  page(
-    "privacy",
-    `<main>${back("/admin/privacy", "Privacy")}<section class="card narrow"><h1>${title}</h1><ul class="plain">${lines.map((line) => `<li>${line}</li>`).join("")}</ul></section></main>`,
-    status,
-  );
+  dialogPage(status < 400 ? "done" : "failed", title, lines, "", ["/admin/privacy", "Privacy"], status);
 
 /** POST /admin/rights: export, deletion and the log, for requests that came by mail. */
 const rightsAction = async (env: Env, form: FormData): Promise<Response> => {
@@ -213,7 +222,7 @@ const rightsAction = async (env: Env, form: FormData): Promise<Response> => {
   if (action === "log") {
     const type = RIGHTS_TYPES.find((candidate) => candidate === field("type")) as RightsType | undefined;
     const outcome = RIGHTS_OUTCOMES.find((candidate) => candidate === field("outcome")) as RightsOutcome | undefined;
-    if (type === undefined || outcome === undefined) return resultPage("Nothing was logged", ["Choose a request and an outcome."], 400);
+    if (type === undefined || outcome === undefined) return resultPage("Nothing logged", ["Choose a request and an outcome."], 400);
     await logRightsRequest(env, { type, channel: "email", outcome, accountId: null }).run();
     return seeOther("/admin/privacy");
   }
@@ -236,30 +245,26 @@ const rightsAction = async (env: Env, form: FormData): Promise<Response> => {
       if (account === null) return resultPage("No such account", [], 404);
       return confirmPage(
         "Delete this account?",
-        [
-          `<bdi>${escapeHtml(account.label)}</bdi>, joined ${day(account.created_at)}`,
-          `${number(account.sessions)} sign-ins and ${number(account.usage_rows)} usage records go with it, and the onboarding answers`,
-          "The record of acceptance of the Terms is kept for five years, under the account's identifier only",
-        ],
+        [`<bdi>${escapeHtml(account.label)}</bdi> · joined ${day(account.created_at)}`, `${number(account.sessions)} sign-ins · ${number(account.usage_rows)} usage records`],
         { action: "delete", account: accountId },
         `/admin/accounts/${accountId}`,
       );
     }
     const done = await deleteAccountForOwner(env, accountId);
     return done === null
-      ? resultPage("No such account", ["It may have been deleted already. The request was logged as not found."], 404)
+      ? resultPage("No such account", ["Logged as not found."], 404)
       : resultPage("Account deleted", [
-          `Deleted ${when(done.deletedAt)} UTC`,
-          `Reference for your reply: <code>${done.accountId}</code>`,
+          `${when(done.deletedAt)} UTC`,
+          `Reference <code>${done.accountId}</code>${copyButton(done.accountId, "Copy reference")}`,
           `Acceptance record kept until ${day(done.kept[0]?.until ?? "")}`,
-          "Usage data from the app and mail the person sent are not tied to the account; delete those separately if asked",
+          "Usage data and mail are separate",
         ]);
   }
 
   if (action === "usage-export" || action === "usage-delete") {
     const installation = field("installation").toLowerCase();
     if (!isInstallationIdentifier(installation)) {
-      return resultPage("That is not an installation identifier", ["It is a UUID, or 64 hexadecimal characters from apps up to 0.1.x."], 400);
+      return resultPage("Not an installation ID", ["A UUID, or 64 hex characters."], 400);
     }
     if (action === "usage-export") {
       const copy = await exportUsageData(env, installation);
@@ -270,15 +275,15 @@ const rightsAction = async (env: Env, form: FormData): Promise<Response> => {
     if (!confirmed) {
       const counts = await countUsageData(env, installation);
       return confirmPage(
-        "Delete this installation's usage data?",
-        [`${number(counts.events)} events`, `${number(counts.choices)} records of the choice`, `${number(counts.errorReports)} error reports`],
+        "Delete this usage data?",
+        [`${number(counts.events)} events · ${number(counts.choices)} records of the choice · ${number(counts.errorReports)} error reports`],
         { action: "usage-delete", installation },
         "/admin/privacy",
       );
     }
     const counts = await deleteUsageData(env, installation);
     return resultPage("Usage data deleted", [
-      `${number(counts.events)} events, ${number(counts.choices)} records of the choice, ${number(counts.errorReports)} error reports`,
+      `${number(counts.events)} events · ${number(counts.choices)} records of the choice · ${number(counts.errorReports)} error reports`,
     ]);
   }
   return resultPage("Unknown action", [], 400);
@@ -364,7 +369,8 @@ export const readableMail = (raw: string): { readonly headers: ReadonlyMap<strin
   return { headers: top.headers, text: textOf(raw, 0) ?? top.body };
 };
 
-const autoCloseNote = `Closed by itself ${CONTACT_MAIL_AUTO_CLOSE_DAYS} days after arrival; deleted ${CONTACT_MAIL_MONTHS_AFTER_CLOSED} months after closing.`;
+/** Shown wherever mail is not being forwarded. The setting's name is behind the word. */
+const FORWARDING_OFF = `<span class="warn" title="Mail stays on this dashboard. Set MAIL_FORWARD_TO.">Off</span>`;
 
 const mailList = async (env: Env): Promise<string> => {
   const [list, counts] = await Promise.all([
@@ -377,25 +383,32 @@ const mailList = async (env: Env): Promise<string> => {
     mailCounts(env),
   ]);
   const forwarding = forwardAddresses(env).length > 0;
+  const show = (value: string, label: string, pressed = false): string => `<button type="button" data-show="${value}" aria-pressed="${pressed}">${label}</button>`;
   return `<main>
 <div class="bar"><h1>Mail<span class="count">${number(counts.unread)} unread · ${number(counts.open)} open</span></h1>
-<form method="post" action="/admin/mail"><button class="icon-button" name="action" value="read-all"${counts.unread === 0 ? " disabled" : ""}>Mark all read</button></form></div>
-${forwarding ? "" : `<p class="note warn">Forwarding is not set, so mail reaches this page only. Set MAIL_FORWARD_TO.</p>`}
+${forwarding ? "" : `<span class="pill warn" title="Mail stays on this dashboard. Set MAIL_FORWARD_TO.">${icon("alert")}Forwarding off</span>`}
+${hint(`Closes by itself after ${CONTACT_MAIL_AUTO_CLOSE_DAYS} days. Deleted ${CONTACT_MAIL_MONTHS_AFTER_CLOSED} months after closing.`)}</div>
+<div class="sheet" data-filter>
+<div class="toolbar"><div class="periods" role="group" aria-label="Show" data-js hidden>${show("", "All", true)}${show("unread", "Unread")}${show("open", "Open")}${show("closed", "Closed")}</div>
+${filterBox("Filter mail")}<span class="spacer"></span>
+<form method="post" action="/admin/mail"><button class="icon-button square" name="action" value="read-all" title="Mark all read" aria-label="Mark all read"${counts.unread === 0 ? " disabled" : ""}>${icon("checks")}</button></form></div>
 ${
   list.length === 0
-    ? `<div class="sheet"><p class="empty none">No mail</p></div>`
-    : `<div class="sheet"><table class="accounts mail"><thead><tr><th>Received</th><th>To</th><th>From</th><th>Subject</th><th>Forwarded</th><th>State</th></tr></thead><tbody>${list
-        .map(
-          (row) =>
-            `<tr${row.read_at === null ? ' class="unread"' : ""}><td>${when(row.received_at)}</td><td>${escapeHtml(row.address.split("@")[0] ?? "")}</td><td><bdi>${escapeHtml(row.sender ?? "")}</bdi></td>` +
-            `<td class="who"><a href="/admin/mail/${row.id}"><bdi>${escapeHtml(row.subject === null || row.subject === "" ? "(no subject)" : row.subject)}</bdi></a></td>` +
-            `<td>${row.forwarded_at === null ? `<span class="warn" title="${escapeHtml(row.forward_error ?? "")}">No</span>` : "Yes"}</td><td>${row.closed_at === null ? (row.read_at === null ? "Unread" : "Open") : `Closed ${day(row.closed_at)}`}</td>` +
+    ? `<div class="none"><p class="empty">No mail</p></div>`
+    : `<div class="fit"><table class="accounts mail"><thead><tr><th>Subject</th><th>From</th><th>To</th><th>Received</th><th></th></tr></thead><tbody>${list
+        .map((row) => {
+          const state = row.closed_at !== null ? "closed" : row.read_at === null ? "unread open" : "open";
+          return (
+            `<tr class="${state}" data-state="${state}"><td class="who">${row.read_at === null ? dot("accent").replace("<i", '<i title="Unread"') : ""}<a href="/admin/mail/${row.id}"><bdi>${escapeHtml(row.subject === null || row.subject === "" ? "(no subject)" : row.subject)}</bdi></a></td>` +
+            `<td><bdi>${escapeHtml(row.sender ?? "")}</bdi></td><td>${escapeHtml(row.address.split("@")[0] ?? "")}</td><td>${when(row.received_at)}</td>` +
+            `<td>${row.forwarded_at === null ? `<span class="warn" title="${escapeHtml(row.forward_error ?? "Not forwarded")}">Not forwarded</span>` : ""}${row.forwarded_at === null && row.closed_at !== null ? " · " : ""}${row.closed_at === null ? "" : `Closed ${day(row.closed_at)}`}</td>` +
             // The one line a phone shows under the subject.
-            `<td class="line"><bdi>${escapeHtml(row.sender ?? "")}</bdi> · ${escapeHtml(row.address.split("@")[0] ?? "")} · ${day(row.received_at)}${row.forwarded_at === null ? ` · <span class="warn">not forwarded</span>` : ""}${row.closed_at === null ? "" : " · closed"}</td></tr>`,
-        )
-        .join("")}</tbody></table></div>`
+            `<td class="line"><bdi>${escapeHtml(row.sender ?? "")}</bdi> · ${escapeHtml(row.address.split("@")[0] ?? "")} · ${day(row.received_at)}${row.forwarded_at === null ? ` · <span class="warn">not forwarded</span>` : ""}${row.closed_at === null ? "" : " · closed"}</td></tr>`
+          );
+        })
+        .join("")}</tbody></table></div><div class="none" data-none hidden><p class="empty">No match</p></div>`
 }
-<p class="note">${autoCloseNote}</p></main>`;
+</div></main>`;
 };
 
 const mailMessage = async (env: Env, id: string): Promise<string | null> => {
@@ -407,13 +420,13 @@ const mailMessage = async (env: Env, id: string): Promise<string | null> => {
   if (row === null) return null;
   if (row.read_at === null) await env.DB.prepare("UPDATE contact_mail SET read_at = ? WHERE id = ? AND read_at IS NULL").bind(nowIso(), id).run();
   const mail = readableMail(row.raw);
-  const fact = (name: string, value: string): string => (value === "" ? "" : `<div><dt>${name}</dt><dd><bdi>${escapeHtml(value)}</bdi></dd></div>`);
+  const fact = (name: string, value: string, more = ""): string => (value === "" ? "" : `<div><dt>${name}</dt><dd><bdi>${escapeHtml(value)}</bdi>${more}</dd></div>`);
   return `<main>${back("/admin/mail", "Mail")}
 <div class="bar"><h1><bdi>${escapeHtml(row.subject === null || row.subject === "" ? (mail.headers.get("subject") ?? "(no subject)") : row.subject)}</bdi></h1>
-<form method="post" action="/admin/mail"><input type="hidden" name="id" value="${row.id}"><button class="icon-button" name="action" value="${row.closed_at === null ? "close" : "reopen"}">${row.closed_at === null ? "Close" : "Reopen"}</button></form></div>
-<dl class="meta">${fact("From", mail.headers.get("from") ?? row.sender ?? "")}${fact("To", row.address)}${fact("Received", `${when(row.received_at)} UTC`)}${fact("Forwarded", row.forwarded_at === null ? `No${row.forward_error === null ? "" : `: ${row.forward_error}`}` : `${when(row.forwarded_at)} UTC`)}${fact("Closed", row.closed_at === null ? "" : day(row.closed_at))}</dl>
+<form method="post" action="/admin/mail" class="out"><input type="hidden" name="id" value="${row.id}"><button class="icon-button" name="action" value="${row.closed_at === null ? "close" : "reopen"}">${row.closed_at === null ? `${icon("check")}Close` : `${icon("undo")}Reopen`}</button></form></div>
+<dl class="meta">${fact("From", mail.headers.get("from") ?? row.sender ?? "", row.sender === null || row.sender === "" ? "" : copyButton(row.sender, "Copy address"))}${fact("To", row.address)}${fact("Received", `${when(row.received_at)} UTC`)}${fact("Forwarded", row.forwarded_at === null ? `No${row.forward_error === null ? "" : `: ${row.forward_error}`}` : `${when(row.forwarded_at)} UTC`)}${fact("Closed", row.closed_at === null ? "" : day(row.closed_at))}</dl>
 <section class="card full"><pre class="mail">${escapeHtml(mail.text)}</pre>
-<details><summary>As received</summary><pre class="mail">${escapeHtml(row.raw)}</pre></details></section></main>`;
+<details><summary>Source</summary><pre class="mail">${escapeHtml(row.raw)}</pre></details></section></main>`;
 };
 
 const mailAction = async (env: Env, form: FormData): Promise<Response> => {
@@ -451,7 +464,7 @@ export const privacyViews = async (request: Request, env: Env, url: URL): Promis
   if (path === "/admin/retention.json" && get) return json(await retentionReport(env));
   if (path === "/admin/retention" && post) {
     const form = await request.formData();
-    if (form.get("confirm") !== "RUN") return resultPage("Nothing was run", ["Type RUN to confirm."], 400);
+    if (form.get("confirm") !== "RUN") return confirmPage("Run retention now?", ["Removes everything due."], {}, "/admin/privacy", { action: "/admin/retention", word: "RUN", yes: "Run", status: 400 });
     const report = await applyRetention(env);
     return (request.headers.get("accept") ?? "").includes("application/json")
       ? json(report)
@@ -478,7 +491,7 @@ export const privacyViews = async (request: Request, env: Env, url: URL): Promis
   if (path === "/admin/mail" && post) return mailAction(env, await request.formData());
   if (path.startsWith("/admin/mail/") && get) {
     const message = await mailMessage(env, path.slice("/admin/mail/".length));
-    return message === null ? page("mail", `<main>${back("/admin/mail", "Mail")}<p class="empty">No such message</p></main>`, 404) : page("mail", message);
+    return message === null ? page("mail", `<main>${back("/admin/mail", "Mail")}<div class="sheet"><div class="none"><p class="empty">No such message</p></div></div></main>`, 404) : page("mail", message);
   }
   return null;
 };
